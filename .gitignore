@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+*.env
+.venv/
+venv/
+env/
+
+# Telethon sessions
+*.session
+*.session-journal
+user_session*
+bot_session*
+
+# Database
+data/
+*.db
+*.db-journal
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Qoder / AI workspace files
+.qoder/
+.aicoding-chat-workspace
