@@ -91,6 +91,11 @@ async def main() -> None:
         await user_client.start(phone=config.PHONE)
     me = await user_client.get_me()
     logger.info("User client logged in as %s (%d)", me.first_name, me.id)
+    # Refresh the account's dialogs after reconnecting.  This makes Telegram
+    # re-synchronise channel subscriptions, which is important for channels
+    # joined while the StringSession was created or while the service was down.
+    dialogs = await user_client.get_dialogs()
+    logger.info("Telegram dialog sync complete: %d dialogs", len(dialogs))
     await _check_mapping_access(user_client, active_mappings)
 
     # -- Bot client (handles admin commands) --
