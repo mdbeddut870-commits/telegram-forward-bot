@@ -6,9 +6,16 @@ which is why we use it for forwarding. Telegram bots cannot see channel
 posts or non-command group messages due to privacy mode.
 """
 
+import asyncio
 import logging
 
 from telethon import TelegramClient, events
+from telethon.errors import (
+    FloodWaitError,
+    RpcCallFailError,
+    ServerError,
+    TimedOutError,
+)
 from telethon.tl.types import (
     MessageMediaPhoto,
     MessageMediaDocument,
@@ -24,6 +31,13 @@ from telethon.tl.types import (
 import database as db
 
 logger = logging.getLogger("forwarder")
+
+# Telegram may temporarily reject requests during message bursts.  Retrying
+# transient failures prevents a post from being lost after one failed API call.
+MAX_SEND_ATTEMPTS = 5
+RETRY_BASE_SECONDS = 1.0
+SEND_CONCURRENCY = 3
+_send_semaphore = asyncio.Semaphore(SEND_CONCURRENCY)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +108,46 @@ def _prepare_caption(message, add_caption: str, strip_caption: bool):
     return message.text or message.message
 
 
+def _is_retryable_send_error(exc: Exception) -> bool:
+    """Return whether a failed Telegram send is safe to retry."""
+    return isinstance(
+        exc,
+        (
+            FloodWaitError,
+            RpcCallFailError,
+            ServerError,
+            TimedOutError,
+            ConnectionError,
+            asyncio.TimeoutError,
+        ),
+    )
+
+
+async def _send_with_retry(operation, description: str):
+    """Run one Telegram send, retrying transient failures with backoff."""
+    for attempt in range(1, MAX_SEND_ATTEMPTS + 1):
+        try:
+            async with _send_semaphore:
+                return await operation()
+        except FloodWaitError as exc:
+            if attempt >= MAX_SEND_ATTEMPTS:
+                raise
+            delay = max(float(getattr(exc, "seconds", 0)), RETRY_BASE_SECONDS)
+            logger.warning(
+                "Telegram flood wait for %s; retry %d/%d in %.1fs",
+                description, attempt, MAX_SEND_ATTEMPTS - 1, delay,
+            )
+        except Exception as exc:
+            if not _is_retryable_send_error(exc) or attempt >= MAX_SEND_ATTEMPTS:
+                raise
+            delay = RETRY_BASE_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                "Transient send failure for %s (%s); retry %d/%d in %.1fs",
+                description, type(exc).__name__, attempt, MAX_SEND_ATTEMPTS - 1, delay,
+            )
+        await asyncio.sleep(delay)
+
+
 # ---------------------------------------------------------------------------
 # Forward one message or one grouped album to all matching destinations
 # ---------------------------------------------------------------------------
@@ -127,17 +181,28 @@ async def _forward_batch(client: TelegramClient, messages: list, source_id: int)
                 if any(message.media for message in matching_messages):
                     media = [message.media for message in matching_messages if message.media]
                     captions = [new_caption] + [None] * (len(media) - 1)
-                    await client.send_file(
-                        dest["dest_id"], media, caption=captions,
+                    await _send_with_retry(
+                        lambda: client.send_file(
+                            dest["dest_id"], media, caption=captions,
+                        ),
+                        f"{source_id}->{dest['dest_id']}",
                     )
                 else:
-                    await client.send_message(
-                        dest["dest_id"], new_caption or first.text,
+                    await _send_with_retry(
+                        lambda: client.send_message(
+                            dest["dest_id"], new_caption or first.text,
+                        ),
+                        f"{source_id}->{dest['dest_id']}",
                     )
             else:
                 # Passing the complete list in one API request is what keeps
                 # grouped photos/videos grouped at the destination.
-                await client.forward_messages(dest["dest_id"], matching_messages)
+                await _send_with_retry(
+                    lambda: client.forward_messages(
+                        dest["dest_id"], matching_messages,
+                    ),
+                    f"{source_id}->{dest['dest_id']}",
+                )
 
             logger.info(
                 "Forwarded %d message(s) | %s -> %s",
