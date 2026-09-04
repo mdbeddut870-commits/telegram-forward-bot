@@ -36,6 +36,14 @@ async def main() -> None:
 
     db.init_db()
     logger.info("Database initialised at %s", config.DB_PATH)
+    mappings = db.list_mappings()
+    active_mappings = [mapping for mapping in mappings if mapping["active"]]
+    logger.info(
+        "Loaded %d forwarding mappings (%d active) | sources=%s",
+        len(mappings),
+        len(active_mappings),
+        sorted({mapping["source_id"] for mapping in active_mappings}),
+    )
 
     # -- User client (receives messages from source chats) --
     # Railway uses a StringSession secret because the local .session file is

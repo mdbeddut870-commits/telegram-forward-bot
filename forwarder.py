@@ -242,40 +242,69 @@ def register_forward_handler(client: TelegramClient) -> None:
 
     @client.on(events.NewMessage)
     async def on_new_message(event: events.NewMessage.Event):
-        if me_id and event.sender_id == me_id:
-            return
+        try:
+            if me_id and event.sender_id == me_id:
+                return
 
-        # Grouped media is handled once by events.Album below.  Ignoring its
-        # individual NewMessage events prevents an album from being split into
-        # separate destination posts.
-        if event.message.grouped_id:
-            return
+            # Grouped media is handled once by events.Album below.  Ignoring
+            # its individual NewMessage events prevents an album from being
+            # split into separate destination posts.
+            if event.message.grouped_id:
+                return
 
-        text = event.message.text or ""
-        if text.startswith("/"):
-            return
+            text = event.message.text or ""
+            if text.startswith("/"):
+                return
 
-        source_id = event.chat_id
-        destinations = db.get_destinations_for(source_id)
-        if not destinations:
-            return
+            source_id = event.chat_id
+            destinations = db.get_destinations_for(source_id)
+            if not destinations:
+                logger.warning(
+                    "Received message %s from source %s, but no active mapping "
+                    "matches this chat",
+                    event.message.id,
+                    source_id,
+                )
+                return
 
-        await forward_message(client, event.message, source_id)
+            await forward_message(client, event.message, source_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Unhandled error while processing message %s from source %s",
+                getattr(event.message, "id", "?"),
+                getattr(event, "chat_id", "?"),
+            )
 
     @client.on(events.Album)
     async def on_album(event: events.Album.Event):
         """Forward all items in a source album in one request."""
-        if me_id and event.sender_id == me_id:
-            return
+        try:
+            if me_id and event.sender_id == me_id:
+                return
 
-        messages = list(event.messages)
-        if not messages:
-            return
+            messages = list(event.messages)
+            if not messages:
+                return
 
-        source_id = event.chat_id
-        if not db.get_destinations_for(source_id):
-            return
+            source_id = event.chat_id
+            if not db.get_destinations_for(source_id):
+                logger.warning(
+                    "Received album %s from source %s, but no active mapping "
+                    "matches this chat",
+                    getattr(messages[0], "grouped_id", "?"),
+                    source_id,
+                )
+                return
 
-        await forward_album(client, messages, source_id)
+            await forward_album(client, messages, source_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Unhandled error while processing album from source %s",
+                getattr(event, "chat_id", "?"),
+            )
 
     logger.info("Forward handler registered on user client.")
