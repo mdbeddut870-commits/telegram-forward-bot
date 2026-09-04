@@ -38,7 +38,9 @@ def validate() -> None:
         missing.append("API_HASH")
     if not BOT_TOKEN:
         missing.append("BOT_TOKEN")
-    if not PHONE:
+    # A Railway deployment normally authenticates with USER_STRING_SESSION;
+    # PHONE is only needed when starting an interactive local session.
+    if not PHONE and not USER_STRING_SESSION:
         missing.append("PHONE")
     if not ADMIN_IDS:
         missing.append("ADMIN_IDS")

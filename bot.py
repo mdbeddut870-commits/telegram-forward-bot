@@ -31,6 +31,34 @@ logging.basicConfig(
 logger = logging.getLogger("bot")
 
 
+async def _check_mapping_access(client: TelegramClient, mappings: list[dict]) -> None:
+    """Resolve every configured chat with the forwarding user account.
+
+    A mapping can exist in SQLite even when the logged-in Telegram account is
+    no longer a member of the source or cannot post to the destination.  This
+    startup check makes that common failure visible immediately instead of
+    looking like a silent forwarding failure.
+    """
+    chat_ids = sorted({
+        chat_id
+        for mapping in mappings
+        if mapping["active"]
+        for chat_id in (mapping["source_id"], mapping["dest_id"])
+    })
+    for chat_id in chat_ids:
+        try:
+            entity = await client.get_entity(chat_id)
+            title = getattr(entity, "title", None) or getattr(entity, "first_name", None) or str(chat_id)
+            logger.info("Mapping chat accessible: %s (%s)", chat_id, title)
+        except Exception as exc:
+            logger.error(
+                "Mapping chat access FAILED: %s | %s: %s",
+                chat_id,
+                type(exc).__name__,
+                exc,
+            )
+
+
 async def main() -> None:
     config.validate()
 
@@ -63,6 +91,7 @@ async def main() -> None:
         await user_client.start(phone=config.PHONE)
     me = await user_client.get_me()
     logger.info("User client logged in as %s (%d)", me.first_name, me.id)
+    await _check_mapping_access(user_client, active_mappings)
 
     # -- Bot client (handles admin commands) --
     bot_client = TelegramClient(
