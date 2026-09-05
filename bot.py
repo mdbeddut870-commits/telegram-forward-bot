@@ -21,7 +21,7 @@ from telethon.sessions import StringSession
 
 import config
 import database as db
-from forwarder import register_forward_handler
+from forwarder import register_forward_handler, shutdown_forwarding_tasks
 from handlers import register_bot_handlers
 
 # -- Logging setup --
@@ -119,6 +119,7 @@ async def main() -> None:
     try:
         await _run_bot()
     finally:
+        await shutdown_forwarding_tasks()
         health_server.shutdown()
 
 

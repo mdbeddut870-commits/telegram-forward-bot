@@ -65,6 +65,19 @@ def _spawn(coro) -> None:
     task.add_done_callback(_on_task_done)
 
 
+async def shutdown_forwarding_tasks() -> None:
+    """Cancel and drain in-flight forwarding tasks during application shutdown."""
+    tasks = list(_background_tasks)
+    if not tasks:
+        return
+
+    logger.info("Stopping %d background forwarding task(s)", len(tasks))
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    _background_tasks.clear()
+
+
 # ---------------------------------------------------------------------------
 # Media type detection
 # ---------------------------------------------------------------------------
