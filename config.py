@@ -28,6 +28,14 @@ ADMIN_IDS: set[int] = {
 # -- Database --
 DB_PATH: str = os.getenv("DB_PATH", "data/bot.db")
 
+# -- Forwarding behavior --
+# When enabled, messages posted by the bot's own user account in a source
+# chat are forwarded too. Off by default to avoid accidental loops.
+FORWARD_OWN_MESSAGES: bool = (
+    os.getenv("FORWARD_OWN_MESSAGES", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 
 def validate() -> None:
     """Raise if any required config is missing."""

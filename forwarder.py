@@ -30,6 +30,7 @@ from telethon.tl.types import (
     DocumentAttributeSticker,
 )
 
+import config
 import database as db
 
 logger = logging.getLogger("forwarder")
@@ -40,6 +41,28 @@ MAX_SEND_ATTEMPTS = 5
 RETRY_BASE_SECONDS = 1.0
 SEND_CONCURRENCY = 3
 _send_semaphore = asyncio.Semaphore(SEND_CONCURRENCY)
+
+# Background forwarding tasks.  The update loop must never block on a slow
+# Telegram send (flood wait / retry), otherwise every later post is delayed
+# by however long the current batch takes.
+_background_tasks: "set[asyncio.Task]" = set()
+
+
+def _on_task_done(task: asyncio.Task) -> None:
+    """Log failures of background forwarding tasks and release their ref."""
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.exception("Background forwarding task failed", exc_info=exc)
+
+
+def _spawn(coro) -> None:
+    """Run a coroutine in the background without blocking the update loop."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_on_task_done)
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +288,8 @@ def register_forward_handler(client: TelegramClient) -> None:
     @client.on(events.NewMessage)
     async def on_new_message(event: events.NewMessage.Event):
         try:
-            if me_id and event.sender_id == me_id:
+            self_posted = bool(me_id and event.sender_id == me_id)
+            if self_posted and not config.FORWARD_OWN_MESSAGES:
                 return
 
             # Grouped media is handled once by events.Album below.  Ignoring
@@ -280,7 +304,8 @@ def register_forward_handler(client: TelegramClient) -> None:
 
             source_id = event.chat_id
             logger.info(
-                "Received message %s from source %s | source_time=%s | received_at=%s",
+                "Received %smessage %s from source %s | source_time=%s | received_at=%s",
+                "own " if self_posted else "",
                 event.message.id,
                 source_id,
                 getattr(event.message, "date", "unknown"),
@@ -296,7 +321,7 @@ def register_forward_handler(client: TelegramClient) -> None:
                 )
                 return
 
-            await forward_message(client, event.message, source_id)
+            _spawn(forward_message(client, event.message, source_id))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -310,11 +335,12 @@ def register_forward_handler(client: TelegramClient) -> None:
     async def on_album(event: events.Album.Event):
         """Forward all items in a source album in one request."""
         try:
-            if me_id and event.sender_id == me_id:
-                return
-
             messages = list(event.messages)
             if not messages:
+                return
+
+            self_posted = bool(me_id and event.sender_id == me_id)
+            if self_posted and not config.FORWARD_OWN_MESSAGES:
                 return
 
             source_id = event.chat_id
@@ -327,7 +353,7 @@ def register_forward_handler(client: TelegramClient) -> None:
                 )
                 return
 
-            await forward_album(client, messages, source_id)
+            _spawn(forward_album(client, messages, source_id))
         except asyncio.CancelledError:
             raise
         except Exception:
