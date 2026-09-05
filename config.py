@@ -36,6 +36,14 @@ FORWARD_OWN_MESSAGES: bool = (
     in {"1", "true", "yes", "on"}
 )
 
+# Raw update logging is useful while diagnosing Telegram delivery, but writing
+# one log line for every channel update can itself delay the update loop during
+# a backlog. Keep it opt-in for production.
+LOG_RAW_UPDATES: bool = (
+    os.getenv("LOG_RAW_UPDATES", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
 
 def validate() -> None:
     """Raise if any required config is missing."""

@@ -279,24 +279,22 @@ def register_forward_handler(client: TelegramClient) -> None:
     Skips own messages (avoid loops) and messages starting with '/'.
     """
     me_id = getattr(client, "_me_id", None)
-
-    @client.on(events.Raw)
-    async def on_raw_update(update):
-        """Log raw channel updates when diagnosing missing NewMessage events."""
-        if not isinstance(update, (tl_types.UpdateNewChannelMessage, tl_types.UpdateEditChannelMessage)):
-            return
-        channel_id = getattr(update, "channel_id", None)
-        if channel_id is None:
-            peer = getattr(getattr(update, "message", None), "peer_id", None)
-            channel_id = getattr(peer, "channel_id", None)
-        source_id = -1000000000000 - channel_id if channel_id is not None else "?"
-        message = getattr(update, "message", None)
-        logger.info(
-            "Raw channel update: type=%s source=%s message=%s",
-            type(update).__name__,
-            source_id,
-            getattr(message, "id", "?"),
-        )
+    if config.LOG_RAW_UPDATES:
+        @client.on(events.Raw)
+        async def on_raw_update(update):
+            """Log raw channel updates only when explicitly enabled."""
+            if not isinstance(update, tl_types.UpdateNewChannelMessage):
+                return
+            channel_id = getattr(getattr(update, "message", None), "peer_id", None)
+            channel_id = getattr(channel_id, "channel_id", None)
+            source_id = -1000000000000 - channel_id if channel_id is not None else "?"
+            message = getattr(update, "message", None)
+            logger.info(
+                "Raw channel update: type=%s source=%s message=%s",
+                type(update).__name__,
+                source_id,
+                getattr(message, "id", "?"),
+            )
 
     @client.on(events.NewMessage)
     async def on_new_message(event: events.NewMessage.Event):
