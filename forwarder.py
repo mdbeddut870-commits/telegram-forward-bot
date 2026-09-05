@@ -8,6 +8,7 @@ posts or non-command group messages due to privacy mode.
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from telethon import TelegramClient, events
 from telethon.tl import types as tl_types
@@ -206,10 +207,12 @@ async def _forward_batch(client: TelegramClient, messages: list, source_id: int)
                 )
 
             logger.info(
-                "Forwarded %d message(s) | %s -> %s",
+                "Forwarded %d message(s) | %s -> %s | source_time=%s | forwarded_at=%s",
                 len(matching_messages),
                 dest.get("source_name", source_id),
                 dest.get("dest_name", dest["dest_id"]),
+                getattr(matching_messages[0], "date", "unknown"),
+                datetime.now(timezone.utc).isoformat(),
             )
         except Exception as exc:
             logger.error(
@@ -276,6 +279,13 @@ def register_forward_handler(client: TelegramClient) -> None:
                 return
 
             source_id = event.chat_id
+            logger.info(
+                "Received message %s from source %s | source_time=%s | received_at=%s",
+                event.message.id,
+                source_id,
+                getattr(event.message, "date", "unknown"),
+                datetime.now(timezone.utc).isoformat(),
+            )
             destinations = db.get_destinations_for(source_id)
             if not destinations:
                 logger.warning(

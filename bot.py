@@ -12,7 +12,9 @@ due to privacy mode, so the user client is used for forwarding.
 
 import asyncio
 import logging
+import threading
 import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -29,6 +31,35 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("bot")
+
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    """Minimal HTTP endpoint required by the Cloudflare Container probe."""
+
+    def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+        if self.path not in ("/ping", "/health"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = b'{"status":"running"}\n'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        # Keep the bot logs focused on Telegram events.
+        return
+
+
+def _start_health_server() -> ThreadingHTTPServer:
+    """Start the container readiness/liveness server in a daemon thread."""
+    server = ThreadingHTTPServer(("0.0.0.0", 8080), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, name="health-server", daemon=True)
+    thread.start()
+    logger.info("Health server listening on port 8080")
+    return server
 
 
 async def _check_mapping_access(client: TelegramClient, mappings: list[dict]) -> None:
@@ -59,7 +90,39 @@ async def _check_mapping_access(client: TelegramClient, mappings: list[dict]) ->
             )
 
 
+async def _run_client_forever(client: TelegramClient, name: str) -> None:
+    """Keep a Telegram client running after a transient disconnect.
+
+    Telethon normally reconnects transport-level failures itself, but
+    ``run_until_disconnected`` returns when a client is fully disconnected.
+    Without this supervisor the task would finish and the client would never
+    receive new updates again while the Railway process still looked healthy.
+    """
+    while True:
+        await client.run_until_disconnected()
+        logger.warning("%s client disconnected; reconnecting in 5 seconds", name)
+        await asyncio.sleep(5)
+        try:
+            await client.connect()
+            if not await client.is_user_authorized() if name == "User" else False:
+                raise RuntimeError(f"{name} client is no longer authorized")
+            logger.info("%s client reconnected", name)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to reconnect %s client; retrying in 10 seconds", name)
+            await asyncio.sleep(10)
+
+
 async def main() -> None:
+    health_server = _start_health_server()
+    try:
+        await _run_bot()
+    finally:
+        health_server.shutdown()
+
+
+async def _run_bot() -> None:
     config.validate()
 
     db.init_db()
@@ -118,8 +181,8 @@ async def main() -> None:
 
     # -- Run both clients concurrently --
     await asyncio.gather(
-        user_client.run_until_disconnected(),
-        bot_client.run_until_disconnected(),
+        _run_client_forever(user_client, "User"),
+        _run_client_forever(bot_client, "Bot"),
     )
 
 
