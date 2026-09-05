@@ -44,6 +44,12 @@ LOG_RAW_UPDATES: bool = (
     in {"1", "true", "yes", "on"}
 )
 
+# Telegram can occasionally delay channel push updates. Poll mapped sources
+# as a safety net so forwarding does not depend only on push delivery.
+SOURCE_POLL_INTERVAL_SECONDS: float = float(
+    os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "5")
+)
+
 
 def validate() -> None:
     """Raise if any required config is missing."""

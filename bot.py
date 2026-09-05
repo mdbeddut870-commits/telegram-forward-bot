@@ -21,7 +21,11 @@ from telethon.sessions import StringSession
 
 import config
 import database as db
-from forwarder import register_forward_handler, shutdown_forwarding_tasks
+from forwarder import (
+    register_forward_handler,
+    shutdown_forwarding_tasks,
+    start_source_polling,
+)
 from handlers import register_bot_handlers
 
 # -- Logging setup --
@@ -177,6 +181,7 @@ async def _run_bot() -> None:
     # -- Register handlers --
     register_bot_handlers(bot_client)
     register_forward_handler(user_client)
+    start_source_polling(user_client)
 
     logger.info("Both clients running. Press Ctrl+C to stop.")
 

@@ -46,6 +46,8 @@ _send_semaphore = asyncio.Semaphore(SEND_CONCURRENCY)
 # Telegram send (flood wait / retry), otherwise every later post is delayed
 # by however long the current batch takes.
 _background_tasks: "set[asyncio.Task]" = set()
+_claimed_messages: set[tuple[int, int]] = set()
+_source_poll_task: asyncio.Task | None = None
 
 
 def _on_task_done(task: asyncio.Task) -> None:
@@ -76,6 +78,15 @@ async def shutdown_forwarding_tasks() -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     _background_tasks.clear()
+
+
+def _claim_message(source_id: int, message_id: int) -> bool:
+    """Claim a message once so push and polling cannot forward duplicates."""
+    key = (source_id, message_id)
+    if key in _claimed_messages:
+        return False
+    _claimed_messages.add(key)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +325,16 @@ def register_forward_handler(client: TelegramClient) -> None:
                 return
 
             source_id = event.chat_id
+            if not db.get_destinations_for(source_id):
+                logger.warning(
+                    "Received message %s from source %s, but no active mapping "
+                    "matches this chat",
+                    event.message.id,
+                    source_id,
+                )
+                return
+            if not _claim_message(source_id, event.message.id):
+                return
             logger.info(
                 "Received %smessage %s from source %s | source_time=%s | received_at=%s",
                 "own " if self_posted else "",
@@ -322,16 +343,6 @@ def register_forward_handler(client: TelegramClient) -> None:
                 getattr(event.message, "date", "unknown"),
                 datetime.now(timezone.utc).isoformat(),
             )
-            destinations = db.get_destinations_for(source_id)
-            if not destinations:
-                logger.warning(
-                    "Received message %s from source %s, but no active mapping "
-                    "matches this chat",
-                    event.message.id,
-                    source_id,
-                )
-                return
-
             _spawn(forward_message(client, event.message, source_id))
         except asyncio.CancelledError:
             raise
@@ -364,6 +375,9 @@ def register_forward_handler(client: TelegramClient) -> None:
                 )
                 return
 
+            if not any(_claim_message(source_id, message.id) for message in messages):
+                return
+
             _spawn(forward_album(client, messages, source_id))
         except asyncio.CancelledError:
             raise
@@ -374,3 +388,55 @@ def register_forward_handler(client: TelegramClient) -> None:
             )
 
     logger.info("Forward handler registered on user client.")
+
+
+async def _poll_mapped_sources(client: TelegramClient) -> None:
+    """Poll mapped sources to cover Telegram channel push-update delays."""
+    source_ids = sorted({
+        mapping["source_id"]
+        for mapping in db.list_mappings()
+        if mapping["active"]
+    })
+
+    # Do not resend posts that existed before this process started.
+    for source_id in source_ids:
+        try:
+            for message in await client.get_messages(source_id, limit=50):
+                _claimed_messages.add((source_id, message.id))
+        except Exception:
+            logger.exception("Initial source poll failed for %s", source_id)
+
+    logger.info(
+        "Source polling fallback enabled for %d source(s), interval=%.1fs",
+        len(source_ids), config.SOURCE_POLL_INTERVAL_SECONDS,
+    )
+    while True:
+        await asyncio.sleep(config.SOURCE_POLL_INTERVAL_SECONDS)
+        for source_id in source_ids:
+            try:
+                messages = await client.get_messages(source_id, limit=50)
+                for message in sorted(messages, key=lambda item: item.id):
+                    if getattr(message, "grouped_id", None):
+                        continue
+                    if (message.text or "").startswith("/"):
+                        continue
+                    if not _claim_message(source_id, message.id):
+                        continue
+                    logger.info(
+                        "Polled message %s from source %s | source_time=%s",
+                        message.id, source_id, getattr(message, "date", "unknown"),
+                    )
+                    _spawn(forward_message(client, message, source_id))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Source poll failed for %s", source_id)
+
+
+def start_source_polling(client: TelegramClient) -> None:
+    """Start the mapped-source polling fallback."""
+    global _source_poll_task
+    if _source_poll_task is None:
+        _source_poll_task = asyncio.create_task(_poll_mapped_sources(client))
+        _background_tasks.add(_source_poll_task)
+        _source_poll_task.add_done_callback(_on_task_done)
