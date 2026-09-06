@@ -44,11 +44,16 @@ LOG_RAW_UPDATES: bool = (
     in {"1", "true", "yes", "on"}
 )
 
-# Telegram can occasionally delay channel push updates. Poll mapped sources
-# as a safety net so forwarding does not depend only on push delivery.
+# History polling every few seconds triggers Telegram GetHistory flood waits.
+# Keep this opt-in and limited to explicitly diagnosed sources.
 SOURCE_POLL_INTERVAL_SECONDS: float = float(
-    os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "5")
+    os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "60")
 )
+SOURCE_POLL_SOURCE_IDS: set[int] = {
+    int(value.strip())
+    for value in os.getenv("SOURCE_POLL_SOURCE_IDS", "").split(",")
+    if value.strip()
+}
 
 
 def validate() -> None:

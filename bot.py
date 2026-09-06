@@ -150,7 +150,14 @@ async def _run_bot() -> None:
         if config.USER_STRING_SESSION
         else config.USER_SESSION
     )
-    user_client = TelegramClient(user_session, config.API_ID, config.API_HASH)
+    # Ask Telethon to recover updates that arrived while the session was
+    # reconnecting instead of silently starting from the newest update.
+    user_client = TelegramClient(
+        user_session,
+        config.API_ID,
+        config.API_HASH,
+        catch_up=True,
+    )
     if config.USER_STRING_SESSION:
         await user_client.connect()
         if not await user_client.is_user_authorized():

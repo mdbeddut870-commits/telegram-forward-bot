@@ -392,11 +392,15 @@ def register_forward_handler(client: TelegramClient) -> None:
 
 async def _poll_mapped_sources(client: TelegramClient) -> None:
     """Poll mapped sources to cover Telegram channel push-update delays."""
-    source_ids = sorted({
+    mapped_source_ids = {
         mapping["source_id"]
         for mapping in db.list_mappings()
         if mapping["active"]
-    })
+    }
+    source_ids = sorted(mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
+    if not source_ids:
+        logger.info("Source polling fallback disabled; relying on Telegram updates")
+        return
 
     # Do not resend posts that existed before this process started.
     for source_id in source_ids:
@@ -416,6 +420,8 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
             try:
                 messages = await client.get_messages(source_id, limit=50)
                 for message in sorted(messages, key=lambda item: item.id):
+                    if getattr(message, "action", None) is not None:
+                        continue
                     if getattr(message, "grouped_id", None):
                         continue
                     if (message.text or "").startswith("/"):
