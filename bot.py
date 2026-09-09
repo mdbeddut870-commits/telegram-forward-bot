@@ -170,8 +170,9 @@ async def _run_bot() -> None:
     # Refresh the account's dialogs after reconnecting.  This makes Telegram
     # re-synchronise channel subscriptions, which is important for channels
     # joined while the StringSession was created or while the service was down.
-    dialogs = await user_client.get_dialogs()
-    logger.info("Telegram dialog sync complete: %d dialogs", len(dialogs))
+    # Avoid a full dialog refresh on every restart; Telegram update sync is
+    # enough for already-authorized mapped chats and keeps startup lighter.
+    logger.info("Telegram client connected; skipping full dialog refresh")
     await _check_mapping_access(user_client, active_mappings)
 
     # -- Bot client (handles admin commands) --

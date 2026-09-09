@@ -47,6 +47,9 @@ _send_semaphore = asyncio.Semaphore(config.SEND_CONCURRENCY)
 _background_tasks: "set[asyncio.Task]" = set()
 _claimed_messages: set[tuple[int, int]] = set()
 _source_poll_task: asyncio.Task | None = None
+_mapped_source_ids: set[int] = set()
+_mapped_sources_loaded_at: float = 0.0
+MAPPED_SOURCE_CACHE_SECONDS = 5.0
 
 
 def _on_task_done(task: asyncio.Task) -> None:
@@ -86,6 +89,20 @@ def _claim_message(source_id: int, message_id: int) -> bool:
         return False
     _claimed_messages.add(key)
     return True
+
+
+def _is_mapped_source(event) -> bool:
+    """Fast event filter: ignore updates from unrelated chats."""
+    global _mapped_source_ids, _mapped_sources_loaded_at
+    now = asyncio.get_running_loop().time()
+    if now - _mapped_sources_loaded_at >= MAPPED_SOURCE_CACHE_SECONDS:
+        _mapped_source_ids = {
+            mapping["source_id"]
+            for mapping in db.list_mappings()
+            if mapping["active"]
+        }
+        _mapped_sources_loaded_at = now
+    return event.chat_id in _mapped_source_ids
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +291,7 @@ def register_forward_handler(client: TelegramClient) -> None:
                 getattr(message, "id", "?"),
             )
 
-    @client.on(events.NewMessage)
+    @client.on(events.NewMessage(func=_is_mapped_source))
     async def on_new_message(event: events.NewMessage.Event):
         try:
             self_posted = bool(me_id and event.sender_id == me_id)
@@ -292,14 +309,6 @@ def register_forward_handler(client: TelegramClient) -> None:
                 return
 
             source_id = event.chat_id
-            if not db.get_destinations_for(source_id):
-                logger.warning(
-                    "Received message %s from source %s, but no active mapping "
-                    "matches this chat",
-                    event.message.id,
-                    source_id,
-                )
-                return
             if not _claim_message(source_id, event.message.id):
                 return
             logger.info(
@@ -320,7 +329,7 @@ def register_forward_handler(client: TelegramClient) -> None:
                 getattr(event, "chat_id", "?"),
             )
 
-    @client.on(events.Album)
+    @client.on(events.Album(func=_is_mapped_source))
     async def on_album(event: events.Album.Event):
         """Forward all items in a source album in one request."""
         try:
@@ -333,15 +342,6 @@ def register_forward_handler(client: TelegramClient) -> None:
                 return
 
             source_id = event.chat_id
-            if not db.get_destinations_for(source_id):
-                logger.warning(
-                    "Received album %s from source %s, but no active mapping "
-                    "matches this chat",
-                    getattr(messages[0], "grouped_id", "?"),
-                    source_id,
-                )
-                return
-
             if not any(_claim_message(source_id, message.id) for message in messages):
                 return
 
