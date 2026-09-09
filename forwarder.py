@@ -393,13 +393,37 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
         logger.info("Source polling fallback disabled; relying on Telegram updates")
         return
 
-    # Do not resend posts that existed before this process started.
-    for source_id in source_ids:
+    async def poll_source(source_id: int, initial: bool = False) -> None:
         try:
-            for message in await client.get_messages(source_id, limit=50):
-                _claimed_messages.add((source_id, message.id))
+            # Keep each request small. A large sequential history scan was
+            # starving live updates and caused old posts to arrive in bursts.
+            messages = await client.get_messages(source_id, limit=10)
+            if initial:
+                for message in messages:
+                    _claimed_messages.add((source_id, message.id))
+                return
+            for message in sorted(messages, key=lambda item: item.id):
+                if getattr(message, "action", None) is not None:
+                    continue
+                if getattr(message, "grouped_id", None):
+                    continue
+                if (message.text or "").startswith("/"):
+                    continue
+                if not _claim_message(source_id, message.id):
+                    continue
+                logger.info(
+                    "Polled message %s from source %s | source_time=%s",
+                    message.id, source_id, getattr(message, "date", "unknown"),
+                )
+                _spawn(forward_message(client, message, source_id))
+        except FloodWaitError as exc:
+            logger.warning("Polling flood wait for %s: %.1fs", source_id, float(exc.seconds))
         except Exception:
-            logger.exception("Initial source poll failed for %s", source_id)
+            logger.exception("Source poll failed for %s", source_id)
+
+    # Resolve all source heads concurrently so one slow community does not
+    # block the remaining sources.
+    await asyncio.gather(*(poll_source(source_id, initial=True) for source_id in source_ids))
 
     logger.info(
         "Source polling fallback enabled for %d source(s), interval=%.1fs",
@@ -407,27 +431,7 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
     )
     while True:
         await asyncio.sleep(config.SOURCE_POLL_INTERVAL_SECONDS)
-        for source_id in source_ids:
-            try:
-                messages = await client.get_messages(source_id, limit=50)
-                for message in sorted(messages, key=lambda item: item.id):
-                    if getattr(message, "action", None) is not None:
-                        continue
-                    if getattr(message, "grouped_id", None):
-                        continue
-                    if (message.text or "").startswith("/"):
-                        continue
-                    if not _claim_message(source_id, message.id):
-                        continue
-                    logger.info(
-                        "Polled message %s from source %s | source_time=%s",
-                        message.id, source_id, getattr(message, "date", "unknown"),
-                    )
-                    _spawn(forward_message(client, message, source_id))
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Source poll failed for %s", source_id)
+        await asyncio.gather(*(poll_source(source_id) for source_id in source_ids))
 
 
 def start_source_polling(client: TelegramClient) -> None:

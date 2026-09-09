@@ -56,7 +56,7 @@ SEND_CONCURRENCY: int = max(1, int(os.getenv("SEND_CONCURRENCY", "8")))
 # History polling every few seconds triggers Telegram GetHistory flood waits.
 # Keep this opt-in and limited to explicitly diagnosed sources.
 SOURCE_POLL_INTERVAL_SECONDS: float = float(
-    os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "60")
+    os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "15")
 )
 SOURCE_POLL_SOURCE_IDS: set[int] = {
     int(value.strip())
