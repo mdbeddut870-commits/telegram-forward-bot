@@ -109,6 +109,15 @@ async def _add_configured_sources(client: TelegramClient) -> None:
             if row_id:
                 added += 1
                 logger.info("Auto-added source mapping: @%s -> %s", username, config.AUTO_SOURCE_DEST_ID)
+            # Telegram only pushes channel updates to accounts that are
+            # members. Public username resolution works without membership,
+            # but forwarding requires the account to be joined so it receives
+            # live updates. Joining is idempotent; ignore "already a member".
+            try:
+                await client.join_channel(entity)
+                logger.info("Joined source channel @%s", username)
+            except Exception:
+                logger.info("Already a member or cannot join @%s", username)
         except Exception:
             logger.exception("Could not resolve auto source @%s", username)
     logger.info("Auto-source setup complete: %d new mapping(s)", added)
