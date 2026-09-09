@@ -248,7 +248,7 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             preserved_text = f"{quoted_text}\n\n{original_text}"
         else:
             preserved_text = quoted_text or original_text
-        if add_caption or strip_caption:
+        if add_caption or strip_caption or quoted_text:
             new_caption = _prepare_caption(first, add_caption, strip_caption)
             if quoted_text and not strip_caption:
                 new_caption = f"{quoted_text}\n\n{new_caption or ''}".strip()
@@ -259,14 +259,7 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             else:
                 await _send_with_retry(lambda: client.send_message(dest["dest_id"], new_caption or preserved_text), f"{source_id}->{dest['dest_id']}")
         else:
-            # Native forwarding preserves Telegram's own "Forwarded from:"
-            # header, clickable source identity, avatar, and original caption.
             await _send_with_retry(lambda: client.forward_messages(dest["dest_id"], matching_messages), f"{source_id}->{dest['dest_id']}")
-            # A replied-to message is separate Telegram metadata and is not
-            # included in native forwarding. Preserve its text after the
-            # native forward without replacing the source attribution header.
-            if quoted_text:
-                await _send_with_retry(lambda: client.send_message(dest["dest_id"], quoted_text), f"{source_id}->{dest['dest_id']}-reply")
         logger.info("Forwarded %d message(s) | %s -> %s | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
     except Exception as exc:
         logger.error("Failed to forward to %s: %s", dest.get("dest_name", dest["dest_id"]), exc)
@@ -393,8 +386,8 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
         for mapping in db.list_mappings()
         if mapping["active"]
     }
-    # Keep a very conservative fallback for explicitly selected sources only.
-    # Polling every mapped channel triggers Telegram GetHistory flood waits.
+    # Keep all mapped channels live; polling is disabled to avoid flood waits.
+    # Explicit SOURCE_POLL_SOURCE_IDS can still be used as a fallback.
     source_ids = sorted(mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
     if not source_ids:
         logger.info("Source polling fallback disabled; relying on Telegram updates")
