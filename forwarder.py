@@ -217,6 +217,20 @@ async def _send_with_retry(operation, description: str):
 # Forward one message or one grouped album to all matching destinations
 # ---------------------------------------------------------------------------
 
+async def _reply_text(client: TelegramClient, message) -> str:
+    """Load text from a replied-to message, if the post quotes one."""
+    reply = getattr(message, "reply_to", None)
+    reply_id = getattr(reply, "reply_to_msg_id", None)
+    if not reply_id:
+        return ""
+    try:
+        replied = await client.get_messages(message.chat_id, ids=reply_id)
+        return (getattr(replied, "text", None) or "").strip() if replied else ""
+    except Exception:
+        logger.warning("Could not load reply text for message %s", getattr(message, "id", "?"))
+        return ""
+
+
 async def _forward_to_destination(client: TelegramClient, messages: list, source_id: int, dest: dict) -> None:
     """Forward one batch to one destination."""
     try:
@@ -227,15 +241,23 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
         matching_messages = [message for message in messages if _matches_filter(message, filter_type, keywords)]
         if not matching_messages:
             return
-        if add_caption or strip_caption:
-            first = matching_messages[0]
+        first = matching_messages[0]
+        quoted_text = await _reply_text(client, first)
+        original_text = first.text or first.message or ""
+        if quoted_text and original_text:
+            preserved_text = f"{quoted_text}\n\n{original_text}"
+        else:
+            preserved_text = quoted_text or original_text
+        if add_caption or strip_caption or quoted_text:
             new_caption = _prepare_caption(first, add_caption, strip_caption)
+            if quoted_text and not strip_caption:
+                new_caption = f"{quoted_text}\n\n{new_caption or ''}".strip()
             if any(message.media for message in matching_messages):
                 media = [message.media for message in matching_messages if message.media]
                 captions = [new_caption] + [None] * (len(media) - 1)
                 await _send_with_retry(lambda: client.send_file(dest["dest_id"], media, caption=captions), f"{source_id}->{dest['dest_id']}")
             else:
-                await _send_with_retry(lambda: client.send_message(dest["dest_id"], new_caption or first.text), f"{source_id}->{dest['dest_id']}")
+                await _send_with_retry(lambda: client.send_message(dest["dest_id"], new_caption or preserved_text), f"{source_id}->{dest['dest_id']}")
         else:
             await _send_with_retry(lambda: client.forward_messages(dest["dest_id"], matching_messages), f"{source_id}->{dest['dest_id']}")
         logger.info("Forwarded %d message(s) | %s -> %s | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
