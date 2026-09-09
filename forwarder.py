@@ -248,10 +248,13 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             preserved_text = f"{quoted_text}\n\n{original_text}"
         else:
             preserved_text = quoted_text or original_text
-        if add_caption or strip_caption or quoted_text or original_text:
+        source_label = dest.get("source_name", str(source_id)) or str(source_id)
+        source_footer = f"\n\n📌 Source: {source_label}"
+        if add_caption or strip_caption or quoted_text or original_text or any(message.media for message in matching_messages):
             new_caption = _prepare_caption(first, add_caption, strip_caption)
             if quoted_text and not strip_caption:
                 new_caption = f"{quoted_text}\n\n{new_caption or ''}".strip()
+            new_caption = f"{new_caption or ''}{source_footer}".strip()
             if any(message.media for message in matching_messages):
                 media = [message.media for message in matching_messages if message.media]
                 captions = [new_caption] + [None] * (len(media) - 1)
