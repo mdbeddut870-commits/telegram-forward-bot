@@ -248,13 +248,10 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             preserved_text = f"{quoted_text}\n\n{original_text}"
         else:
             preserved_text = quoted_text or original_text
-        source_label = dest.get("source_name", str(source_id)) or str(source_id)
-        source_footer = f"\n\n📌 Source: {source_label}"
-        if add_caption or strip_caption or quoted_text or original_text or any(message.media for message in matching_messages):
+        if add_caption or strip_caption or quoted_text:
             new_caption = _prepare_caption(first, add_caption, strip_caption)
             if quoted_text and not strip_caption:
                 new_caption = f"{quoted_text}\n\n{new_caption or ''}".strip()
-            new_caption = f"{new_caption or ''}{source_footer}".strip()
             if any(message.media for message in matching_messages):
                 media = [message.media for message in matching_messages if message.media]
                 captions = [new_caption] + [None] * (len(media) - 1)
@@ -262,6 +259,8 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             else:
                 await _send_with_retry(lambda: client.send_message(dest["dest_id"], new_caption or preserved_text), f"{source_id}->{dest['dest_id']}")
         else:
+            # Native forwarding preserves Telegram's own "Forwarded from:"
+            # header, clickable source identity, avatar, and original caption.
             await _send_with_retry(lambda: client.forward_messages(dest["dest_id"], matching_messages), f"{source_id}->{dest['dest_id']}")
         logger.info("Forwarded %d message(s) | %s -> %s | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
     except Exception as exc:
