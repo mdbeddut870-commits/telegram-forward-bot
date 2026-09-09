@@ -158,6 +158,13 @@ def update_filter(mapping_id: int, **kwargs) -> bool:
         return cur.rowcount > 0
 
 
+def remove_mappings_for_source(source_id: int) -> int:
+    """Delete all mappings for one source chat."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM mappings WHERE source_id = ?", (source_id,))
+        return cur.rowcount
+
+
 # -- Bot state (key-value store) --
 
 def get_state(key: str, default: str = "") -> str:

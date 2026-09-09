@@ -114,6 +114,23 @@ async def _add_configured_sources(client: TelegramClient) -> None:
     logger.info("Auto-source setup complete: %d new mapping(s)", added)
 
 
+async def _remove_configured_sources(client: TelegramClient) -> None:
+    """Resolve usernames and remove all their forwarding mappings."""
+    removed = 0
+    for username in config.REMOVE_SOURCE_USERNAMES:
+        try:
+            entity = await client.get_entity(username)
+            source_id = int(entity.id)
+            if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+                source_id = int(f"-100{source_id}")
+            count = db.remove_mappings_for_source(source_id)
+            removed += count
+            logger.info("Removed %d mapping(s) for source @%s", count, username)
+        except Exception:
+            logger.exception("Could not remove source @%s", username)
+    logger.info("Source removal complete: %d mapping(s) removed", removed)
+
+
 async def _run_client_forever(client: TelegramClient, name: str) -> None:
     """Keep a Telegram client running after a transient disconnect.
 
@@ -192,6 +209,7 @@ async def _run_bot() -> None:
     dialogs = await user_client.get_dialogs()
     logger.info("Telegram dialog sync complete: %d dialogs", len(dialogs))
     await _check_mapping_access(user_client, active_mappings)
+    await _remove_configured_sources(user_client)
     await _add_configured_sources(user_client)
 
     # -- Bot client (handles admin commands) --
