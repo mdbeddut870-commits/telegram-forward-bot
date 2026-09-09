@@ -44,6 +44,15 @@ LOG_RAW_UPDATES: bool = (
     in {"1", "true", "yes", "on"}
 )
 
+# Prioritize new posts over replaying an offline backlog.
+CATCH_UP: bool = (
+    os.getenv("CATCH_UP", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+# Concurrent sends reduce delay across multiple destinations.
+SEND_CONCURRENCY: int = max(1, int(os.getenv("SEND_CONCURRENCY", "8")))
+
 # History polling every few seconds triggers Telegram GetHistory flood waits.
 # Keep this opt-in and limited to explicitly diagnosed sources.
 SOURCE_POLL_INTERVAL_SECONDS: float = float(

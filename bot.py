@@ -156,7 +156,8 @@ async def _run_bot() -> None:
         user_session,
         config.API_ID,
         config.API_HASH,
-        catch_up=True,
+        # Prioritize live posts over replaying an offline backlog.
+        catch_up=config.CATCH_UP,
     )
     if config.USER_STRING_SESSION:
         await user_client.connect()

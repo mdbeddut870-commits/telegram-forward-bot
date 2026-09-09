@@ -39,8 +39,7 @@ logger = logging.getLogger("forwarder")
 # transient failures prevents a post from being lost after one failed API call.
 MAX_SEND_ATTEMPTS = 5
 RETRY_BASE_SECONDS = 1.0
-SEND_CONCURRENCY = 3
-_send_semaphore = asyncio.Semaphore(SEND_CONCURRENCY)
+_send_semaphore = asyncio.Semaphore(config.SEND_CONCURRENCY)
 
 # Background forwarding tasks.  The update loop must never block on a slow
 # Telegram send (flood wait / retry), otherwise every later post is delayed
@@ -201,72 +200,40 @@ async def _send_with_retry(operation, description: str):
 # Forward one message or one grouped album to all matching destinations
 # ---------------------------------------------------------------------------
 
-async def _forward_batch(client: TelegramClient, messages: list, source_id: int) -> None:
-    """Forward messages as one Telegram request, preserving media albums."""
-    destinations = db.get_destinations_for(source_id)
-    if not destinations:
-        return
-
-    for dest in destinations:
-        try:
-            filter_type = dest.get("filter_type", "all") or "all"
-            keywords = dest.get("keywords", "") or ""
-            add_caption = dest.get("add_caption", "") or ""
-            strip_caption = bool(dest.get("strip_caption", 0))
-
-            matching_messages = [
-                message for message in messages
-                if _matches_filter(message, filter_type, keywords)
-            ]
-            if not matching_messages:
-                continue
-
-            if add_caption or strip_caption:
-                # Telegram albums have one caption, normally on the first
-                # item.  Keep that caption on the first forwarded media and
-                # leave the remaining album items captionless.
-                first = matching_messages[0]
-                new_caption = _prepare_caption(first, add_caption, strip_caption)
-                if any(message.media for message in matching_messages):
-                    media = [message.media for message in matching_messages if message.media]
-                    captions = [new_caption] + [None] * (len(media) - 1)
-                    await _send_with_retry(
-                        lambda: client.send_file(
-                            dest["dest_id"], media, caption=captions,
-                        ),
-                        f"{source_id}->{dest['dest_id']}",
-                    )
-                else:
-                    await _send_with_retry(
-                        lambda: client.send_message(
-                            dest["dest_id"], new_caption or first.text,
-                        ),
-                        f"{source_id}->{dest['dest_id']}",
-                    )
+async def _forward_to_destination(client: TelegramClient, messages: list, source_id: int, dest: dict) -> None:
+    """Forward one batch to one destination."""
+    try:
+        filter_type = dest.get("filter_type", "all") or "all"
+        keywords = dest.get("keywords", "") or ""
+        add_caption = dest.get("add_caption", "") or ""
+        strip_caption = bool(dest.get("strip_caption", 0))
+        matching_messages = [message for message in messages if _matches_filter(message, filter_type, keywords)]
+        if not matching_messages:
+            return
+        if add_caption or strip_caption:
+            first = matching_messages[0]
+            new_caption = _prepare_caption(first, add_caption, strip_caption)
+            if any(message.media for message in matching_messages):
+                media = [message.media for message in matching_messages if message.media]
+                captions = [new_caption] + [None] * (len(media) - 1)
+                await _send_with_retry(lambda: client.send_file(dest["dest_id"], media, caption=captions), f"{source_id}->{dest['dest_id']}")
             else:
-                # Passing the complete list in one API request is what keeps
-                # grouped photos/videos grouped at the destination.
-                await _send_with_retry(
-                    lambda: client.forward_messages(
-                        dest["dest_id"], matching_messages,
-                    ),
-                    f"{source_id}->{dest['dest_id']}",
-                )
+                await _send_with_retry(lambda: client.send_message(dest["dest_id"], new_caption or first.text), f"{source_id}->{dest['dest_id']}")
+        else:
+            await _send_with_retry(lambda: client.forward_messages(dest["dest_id"], matching_messages), f"{source_id}->{dest['dest_id']}")
+        logger.info("Forwarded %d message(s) | %s -> %s | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
+    except Exception as exc:
+        logger.error("Failed to forward to %s: %s", dest.get("dest_name", dest["dest_id"]), exc)
 
-            logger.info(
-                "Forwarded %d message(s) | %s -> %s | source_time=%s | forwarded_at=%s",
-                len(matching_messages),
-                dest.get("source_name", source_id),
-                dest.get("dest_name", dest["dest_id"]),
-                getattr(matching_messages[0], "date", "unknown"),
-                datetime.now(timezone.utc).isoformat(),
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to forward to %s: %s",
-                dest.get("dest_name", dest["dest_id"]),
-                exc,
-            )
+
+async def _forward_batch(client: TelegramClient, messages: list, source_id: int) -> None:
+    """Forward a batch to all destinations concurrently."""
+    destinations = db.get_destinations_for(source_id)
+    if destinations:
+        await asyncio.gather(*(
+            _forward_to_destination(client, messages, source_id, dest)
+            for dest in destinations
+        ))
 
 
 async def forward_message(client: TelegramClient, message, source_id: int) -> None:
