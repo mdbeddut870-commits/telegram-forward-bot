@@ -94,6 +94,26 @@ async def _check_mapping_access(client: TelegramClient, mappings: list[dict]) ->
             )
 
 
+async def _add_configured_sources(client: TelegramClient) -> None:
+    """Resolve public usernames and persist source->destination mappings."""
+    if not config.AUTO_SOURCE_USERNAMES or not config.AUTO_SOURCE_DEST_ID:
+        return
+    added = 0
+    for username in config.AUTO_SOURCE_USERNAMES:
+        try:
+            entity = await client.get_entity(username)
+            source_id = int(entity.id)
+            if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+                source_id = int(f"-100{source_id}")
+            row_id = db.add_mapping(source_id, config.AUTO_SOURCE_DEST_ID, getattr(entity, "title", None) or username, str(config.AUTO_SOURCE_DEST_ID))
+            if row_id:
+                added += 1
+                logger.info("Auto-added source mapping: @%s -> %s", username, config.AUTO_SOURCE_DEST_ID)
+        except Exception:
+            logger.exception("Could not resolve auto source @%s", username)
+    logger.info("Auto-source setup complete: %d new mapping(s)", added)
+
+
 async def _run_client_forever(client: TelegramClient, name: str) -> None:
     """Keep a Telegram client running after a transient disconnect.
 
@@ -174,6 +194,7 @@ async def _run_bot() -> None:
     # enough for already-authorized mapped chats and keeps startup lighter.
     logger.info("Telegram client connected; skipping full dialog refresh")
     await _check_mapping_access(user_client, active_mappings)
+    await _add_configured_sources(user_client)
 
     # -- Bot client (handles admin commands) --
     bot_client = TelegramClient(

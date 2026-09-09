@@ -64,6 +64,19 @@ SOURCE_POLL_SOURCE_IDS: set[int] = {
     if value.strip()
 }
 
+SOURCE_POLL_ALL_MAPPED: bool = (
+    os.getenv("SOURCE_POLL_ALL_MAPPED", "false").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+
+# Optional public usernames resolved automatically on startup.
+AUTO_SOURCE_USERNAMES: list[str] = [
+    value.strip().lstrip("@")
+    for value in os.getenv("AUTO_SOURCE_USERNAMES", "").split(",")
+    if value.strip()
+]
+AUTO_SOURCE_DEST_ID: int = int(os.getenv("AUTO_SOURCE_DEST_ID", "0"))
+
 
 def validate() -> None:
     """Raise if any required config is missing."""

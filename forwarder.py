@@ -364,7 +364,7 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
         for mapping in db.list_mappings()
         if mapping["active"]
     }
-    source_ids = sorted(mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
+    source_ids = sorted(mapped_source_ids if config.SOURCE_POLL_ALL_MAPPED else mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
     if not source_ids:
         logger.info("Source polling fallback disabled; relying on Telegram updates")
         return
