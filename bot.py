@@ -168,6 +168,9 @@ async def _run_bot() -> None:
     config.validate()
 
     db.init_db()
+    normalized = db.normalize_all_destination_ids()
+    if normalized:
+        logger.info("Normalized %d legacy destination mapping(s)", normalized)
     logger.info("Database initialised at %s", config.DB_PATH)
     mappings = db.list_mappings()
     active_mappings = [mapping for mapping in mappings if mapping["active"]]

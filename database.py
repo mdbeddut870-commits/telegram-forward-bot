@@ -165,6 +165,40 @@ def remove_mappings_for_source(source_id: int) -> int:
         return cur.rowcount
 
 
+def normalize_destination_ids(dest_id: int) -> int:
+    """Normalize legacy positive Telegram supergroup IDs and remove duplicates."""
+    canonical = -abs(dest_id) if abs(dest_id) >= 10**12 else dest_id
+    with get_conn() as conn:
+        if canonical != dest_id:
+            duplicate = conn.execute(
+                "SELECT id FROM mappings WHERE source_id = ? AND dest_id = ?",
+                (None, canonical),
+            ).fetchone()
+            conn.execute("UPDATE mappings SET dest_id = ? WHERE dest_id = ?", (canonical, dest_id))
+        return canonical
+
+
+def normalize_all_destination_ids() -> int:
+    """Convert legacy positive -100... destination IDs in-place."""
+    changed = 0
+    with get_conn() as conn:
+        rows = conn.execute("SELECT id, dest_id FROM mappings").fetchall()
+        for row in rows:
+            dest_id = int(row["dest_id"])
+            if dest_id >= 10**12:
+                canonical = -dest_id
+                duplicate = conn.execute(
+                    "SELECT id FROM mappings WHERE source_id = (SELECT source_id FROM mappings WHERE id = ?) AND dest_id = ? AND id != ?",
+                    (row["id"], canonical, row["id"]),
+                ).fetchone()
+                if duplicate:
+                    conn.execute("DELETE FROM mappings WHERE id = ?", (row["id"],))
+                else:
+                    conn.execute("UPDATE mappings SET dest_id = ? WHERE id = ?", (canonical, row["id"]))
+                changed += 1
+    return changed
+
+
 # -- Bot state (key-value store) --
 
 def get_state(key: str, default: str = "") -> str:
