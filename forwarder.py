@@ -260,7 +260,15 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 await _send_with_retry(lambda: client.send_message(dest["dest_id"], new_caption or preserved_text), f"{source_id}->{dest['dest_id']}")
         else:
             # Always use Telegram native forwarding for the source header.
-            await _send_with_retry(lambda: client.forward_messages(dest["dest_id"], matching_messages), f"{source_id}->{dest['dest_id']}")
+            try:
+                await _send_with_retry(lambda: client.forward_messages(dest["dest_id"], matching_messages), f"{source_id}->{dest['dest_id']}")
+            except Exception as exc:
+                # Some media (content-protected albums, mixed groups) cannot be
+                # forwarded as one request. Forward each item separately so the
+                # post is not lost entirely and keeps its native header.
+                logger.warning("Batch forward failed (%s); retrying individually", exc)
+                for message in matching_messages:
+                    await _send_with_retry(lambda m=message: client.forward_messages(dest["dest_id"], [m]), f"{source_id}->{dest['dest_id']}-item-{message.id}")
             # Reply/quoted text is separate metadata; append it without
             # replacing the native Forwarded-from attribution.
             if quoted_text:
@@ -393,7 +401,7 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
     }
     # Keep all mapped channels live; polling is disabled to avoid flood waits.
     # Explicit SOURCE_POLL_SOURCE_IDS can still be used as a fallback.
-    source_ids = sorted(mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
+    source_ids = sorted(mapped_source_ids if config.SOURCE_POLL_ALL_MAPPED else mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
     if not source_ids:
         logger.info("Source polling fallback disabled; relying on Telegram updates")
         return
