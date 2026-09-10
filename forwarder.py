@@ -248,31 +248,24 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             preserved_text = f"{quoted_text}\n\n{original_text}"
         else:
             preserved_text = quoted_text or original_text
+        # Always create a native Telegram forward first so the source header is
+        # never lost. Custom caption/reply options are sent as an additional
+        # message instead of replacing the native forward.
+        await _send_with_retry(
+            lambda: client.forward_messages(dest["dest_id"], matching_messages),
+            f"{source_id}->{dest['dest_id']}",
+        )
+
+        extra_text = ""
         if add_caption or strip_caption:
-            new_caption = _prepare_caption(first, add_caption, strip_caption)
-            if quoted_text and not strip_caption:
-                new_caption = f"{quoted_text}\n\n{new_caption or ''}".strip()
-            if any(message.media for message in matching_messages):
-                media = [message.media for message in matching_messages if message.media]
-                captions = [new_caption] + [None] * (len(media) - 1)
-                await _send_with_retry(lambda: client.send_file(dest["dest_id"], media, caption=captions), f"{source_id}->{dest['dest_id']}")
-            else:
-                await _send_with_retry(lambda: client.send_message(dest["dest_id"], new_caption or preserved_text), f"{source_id}->{dest['dest_id']}")
-        else:
-            # Always use Telegram native forwarding for the source header.
-            try:
-                await _send_with_retry(lambda: client.forward_messages(dest["dest_id"], matching_messages), f"{source_id}->{dest['dest_id']}")
-            except Exception as exc:
-                # Some media (content-protected albums, mixed groups) cannot be
-                # forwarded as one request. Forward each item separately so the
-                # post is not lost entirely and keeps its native header.
-                logger.warning("Batch forward failed (%s); retrying individually", exc)
-                for message in matching_messages:
-                    await _send_with_retry(lambda m=message: client.forward_messages(dest["dest_id"], [m]), f"{source_id}->{dest['dest_id']}-item-{message.id}")
-            # Reply/quoted text is separate metadata; append it without
-            # replacing the native Forwarded-from attribution.
-            if quoted_text:
-                await _send_with_retry(lambda: client.send_message(dest["dest_id"], quoted_text), f"{source_id}->{dest['dest_id']}-reply")
+            extra_text = _prepare_caption(first, add_caption, strip_caption) or ""
+        if quoted_text and not strip_caption:
+            extra_text = f"{quoted_text}\n\n{extra_text}".strip() if extra_text else quoted_text
+        if extra_text:
+            await _send_with_retry(
+                lambda: client.send_message(dest["dest_id"], extra_text),
+                f"{source_id}->{dest['dest_id']}-extra",
+            )
         logger.info("Forwarded %d message(s) | %s -> %s | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
     except Exception as exc:
         logger.error("Failed to forward to %s: %s", dest.get("dest_name", dest["dest_id"]), exc)
