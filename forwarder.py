@@ -392,9 +392,9 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
         for mapping in db.list_mappings()
         if mapping["active"]
     }
-    # Keep all mapped channels live; polling is disabled to avoid flood waits.
-    # Explicit SOURCE_POLL_SOURCE_IDS can still be used as a fallback.
-    source_ids = sorted(mapped_source_ids if config.SOURCE_POLL_ALL_MAPPED else mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
+    # Do not re-fetch every configured channel's history. Telegram's live update
+    # stream is the fast path; this fallback is only for explicitly diagnosed IDs.
+    source_ids = sorted(mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
     if not source_ids:
         logger.info("Source polling fallback disabled; relying on Telegram updates")
         return
