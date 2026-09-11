@@ -199,6 +199,16 @@ def normalize_all_destination_ids() -> int:
     return changed
 
 
+def remove_mappings_for_sources(source_ids: set[int]) -> int:
+    """Delete all mappings for the given source chats."""
+    if not source_ids:
+        return 0
+    with get_conn() as conn:
+        placeholders = ",".join("?" for _ in source_ids)
+        cur = conn.execute(f"DELETE FROM mappings WHERE source_id IN ({placeholders})", tuple(source_ids))
+        return cur.rowcount
+
+
 # -- Bot state (key-value store) --
 
 def get_state(key: str, default: str = "") -> str:

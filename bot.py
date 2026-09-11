@@ -66,7 +66,7 @@ def _start_health_server() -> ThreadingHTTPServer:
     return server
 
 
-async def _check_mapping_access(client: TelegramClient, mappings: list[dict]) -> None:
+async def _check_mapping_access(client: TelegramClient, mappings: list[dict]) -> set[int]:
     """Resolve every configured chat with the forwarding user account.
 
     A mapping can exist in SQLite even when the logged-in Telegram account is
@@ -80,18 +80,21 @@ async def _check_mapping_access(client: TelegramClient, mappings: list[dict]) ->
         if mapping["active"]
         for chat_id in (mapping["source_id"], mapping["dest_id"])
     })
+    inaccessible = set()
     for chat_id in chat_ids:
         try:
             entity = await client.get_entity(chat_id)
             title = getattr(entity, "title", None) or getattr(entity, "first_name", None) or str(chat_id)
             logger.info("Mapping chat accessible: %s (%s)", chat_id, title)
         except Exception as exc:
+            inaccessible.add(chat_id)
             logger.error(
                 "Mapping chat access FAILED: %s | %s: %s",
                 chat_id,
                 type(exc).__name__,
                 exc,
             )
+    return inaccessible
 
 
 async def _add_configured_sources(client: TelegramClient) -> None:
@@ -124,19 +127,8 @@ async def _add_configured_sources(client: TelegramClient) -> None:
 
 
 async def _remove_configured_sources(client: TelegramClient) -> None:
-    """Resolve usernames and remove all their forwarding mappings."""
-    removed = 0
-    for username in config.REMOVE_SOURCE_USERNAMES:
-        try:
-            entity = await client.get_entity(username)
-            source_id = int(entity.id)
-            if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
-                source_id = int(f"-100{source_id}")
-            count = db.remove_mappings_for_source(source_id)
-            removed += count
-            logger.info("Removed %d mapping(s) for source @%s", count, username)
-        except Exception:
-            logger.exception("Could not remove source @%s", username)
+    """Remove source IDs that were found inaccessible at startup."""
+    removed = db.remove_mappings_for_sources(config.REMOVE_SOURCE_IDS)
     logger.info("Source removal complete: %d mapping(s) removed", removed)
 
 
@@ -220,9 +212,12 @@ async def _run_bot() -> None:
     # source channels and receives their channel updates reliably.
     dialogs = await user_client.get_dialogs()
     logger.info("Telegram dialog sync complete: %d dialogs", len(dialogs))
-    await _check_mapping_access(user_client, active_mappings)
-    await _remove_configured_sources(user_client)
-    await _add_configured_sources(user_client)
+    inaccessible_chats = await _check_mapping_access(user_client, active_mappings)
+    mapped_sources = {mapping["source_id"] for mapping in active_mappings}
+    inaccessible_sources = inaccessible_chats & mapped_sources
+    if inaccessible_sources:
+        removed = db.remove_mappings_for_sources(inaccessible_sources)
+        logger.warning("Removed %d inaccessible source mapping(s): %s", removed, sorted(inaccessible_sources))
 
     # -- Bot client (handles admin commands) --
     bot_client = TelegramClient(

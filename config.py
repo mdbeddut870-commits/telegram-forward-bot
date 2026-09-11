@@ -76,11 +76,11 @@ AUTO_SOURCE_USERNAMES: list[str] = [
     if value.strip()
 ]
 AUTO_SOURCE_DEST_ID: int = int(os.getenv("AUTO_SOURCE_DEST_ID", "0"))
-REMOVE_SOURCE_USERNAMES: list[str] = [
-    value.strip().lstrip("@")
-    for value in os.getenv("REMOVE_SOURCE_USERNAMES", "").split(",")
+REMOVE_SOURCE_IDS: set[int] = {
+    int(value.strip())
+    for value in os.getenv("REMOVE_SOURCE_IDS", "").split(",")
     if value.strip()
-]
+}
 
 
 def validate() -> None:
