@@ -1,0 +1,18 @@
+{
+  "name": "telegram-forward-bot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail --format pretty"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260903.1",
+    "typescript": "^5.5.0",
+    "wrangler": "^4.123.0"
+  }
+}

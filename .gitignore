@@ -8,6 +8,15 @@ dist/
 build/
 *.egg
 
+# Node
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Cloudflare
+.wrangler/
+.dev.vars
+
 # Environment
 .env
 *.env
@@ -21,10 +30,22 @@ env/
 user_session*
 bot_session*
 
+# Helper scripts (local-only, contain hardcoded creds patterns)
+gen_session.py
+send_code.py
+verify_code.py
+diag_runtime.py
+read_runtime.py
+scan_runtime.py
+send_runtime.py
+send2_runtime.py
+
 # Database
 data/
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 
 # IDE
 .vscode/
@@ -43,3 +64,4 @@ Thumbs.db
 # Qoder / AI workspace files
 .qoder/
 .aicoding-chat-workspace
+.kilo/
