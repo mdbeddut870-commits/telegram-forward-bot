@@ -283,7 +283,14 @@ async def _forward_batch(client: TelegramClient, messages: list, source_id: int)
 
 async def forward_message(client: TelegramClient, message, source_id: int) -> None:
     """Forward one non-album message."""
+    claimed_at = datetime.now(timezone.utc)
     await _forward_batch(client, [message], source_id)
+    delay = (datetime.now(timezone.utc) - claimed_at).total_seconds()
+    if delay > 10:
+        logger.warning(
+            "Slow forward: message %s from %s took %.1fs (queue wait + send)",
+            getattr(message, "id", "?"), source_id, delay,
+        )
 
 
 async def forward_album(client: TelegramClient, messages: list, source_id: int) -> None:

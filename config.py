@@ -51,7 +51,10 @@ CATCH_UP: bool = (
 )
 
 # Concurrent sends reduce delay across multiple destinations.
-SEND_CONCURRENCY: int = max(1, int(os.getenv("SEND_CONCURRENCY", "8")))
+# Raised from 8: all destinations are a single chat, so forwards are
+# sequential per message — a higher cap prevents one slow media upload
+# from blocking newer messages behind it in the semaphore queue.
+SEND_CONCURRENCY: int = max(1, int(os.getenv("SEND_CONCURRENCY", "32")))
 
 # History polling every few seconds triggers Telegram GetHistory flood waits.
 # Keep this opt-in and limited to explicitly diagnosed sources.
