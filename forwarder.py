@@ -352,7 +352,64 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
         msg_ids = [message.id for message in matching_messages]
         forwarded_ok = False
         mapping_id = dest.get("mapping_id", 0)
+        kucoin_mode = _mentions_kucoin(*[(m.text or "") for m in matching_messages])
         try:
+            if kucoin_mode:
+                # KuCoin posts skip native forward entirely: Telegram cannot
+                # attach custom text to a forward, so forward+edit produced TWO
+                # posts (bare forward, then link as reply when edit failed).
+                # One attributed copy guarantees the link is in the FIRST post.
+                copy_caption = ""
+                if add_caption or strip_caption:
+                    copy_caption = _prepare_caption(first, add_caption, strip_caption) or ""
+                if quoted_text and not strip_caption:
+                    copy_caption = f"{quoted_text}\n\n{copy_caption}".strip() if copy_caption else quoted_text
+                kucoin_text = copy_caption if copy_caption else original_text
+                kucoin_text = _with_kucoin_register_line(kucoin_text)
+                kucoin_source = dest.get("source_name", source_id)
+                kucoin_attributed = _attributed_copy_text(kucoin_source, kucoin_text)
+                if matching_messages[0].media:
+                    await _send_with_retry(
+                        lambda: client.send_file(
+                            dest["dest_id"], matching_messages[0].media,
+                            caption=kucoin_attributed,
+                        ),
+                        f"{source_id}->{dest['dest_id']}-kucoin",
+                    )
+                    for message in matching_messages[1:]:
+                        # Whole album belongs to a KuCoin post: force the link
+                        # on every item even if only the first mentions KuCoin.
+                        item_body = _with_kucoin_register_line(message.text or "")
+                        if "CXEEW12K" not in item_body:
+                            link_line = getattr(config, "KUCOIN_REGISTER_LINE", "").strip()
+                            if link_line:
+                                item_body = f"{(message.text or '').strip()}\n\n{link_line}".strip()
+                        item_text = _attributed_copy_text(kucoin_source, item_body)
+                        if message.media:
+                            await _send_with_retry(
+                                lambda m=message, t=item_text: client.send_file(
+                                    dest["dest_id"], m.media, caption=t,
+                                ),
+                                f"{source_id}->{dest['dest_id']}-kucoin",
+                            )
+                        else:
+                            await _send_with_retry(
+                                lambda t=item_text: client.send_message(
+                                    dest["dest_id"], t,
+                                ),
+                                f"{source_id}->{dest['dest_id']}-kucoin",
+                            )
+                else:
+                    await _send_with_retry(
+                        lambda: client.send_message(dest["dest_id"], kucoin_attributed),
+                        f"{source_id}->{dest['dest_id']}-kucoin",
+                    )
+                logger.info("KuCoin copy sent with register link | %s -> %s | header=manual | source_time=%s | forwarded_at=%s", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(first, "date", "unknown"), datetime.now(timezone.utc).isoformat())
+                try:
+                    db.bump_stat(mapping_id, "forwarded")
+                except Exception:
+                    pass
+                return []
             sent = await _send_with_retry(
                 lambda: client.forward_messages(dest["dest_id"], msg_ids, from_peer=source_id, drop_author=False),
                 f"{source_id}->{dest['dest_id']}",
@@ -419,12 +476,6 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             extra_text = _prepare_caption(first, add_caption, strip_caption) or ""
         if quoted_text and not strip_caption:
             extra_text = f"{quoted_text}\n\n{extra_text}".strip() if extra_text else quoted_text
-        kucoin_triggered = _mentions_kucoin(*[(m.text or "") for m in matching_messages])
-        if kucoin_triggered:
-            base_for_link = extra_text if extra_text else original_text
-            linked = _with_kucoin_register_line(base_for_link)
-            if linked != base_for_link:
-                extra_text = linked
         if extra_text and extra_text != original_text:
             try:
                 sent_list = sent if isinstance(sent, list) else [sent]
@@ -442,16 +493,21 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                             lambda: fwd_msg.edit(extra_text),
                             f"{source_id}->{dest['dest_id']}-edit",
                         )
+                        edited_in_place = True
                     except Exception:
                         # Some forwarded copies (service/album edge cases) are
-                        # not editable: resend the text so the link still lands.
+                        # not editable: resend the text so the caption still lands.
                         await _send_with_retry(
                             lambda: client.send_message(
                                 dest["dest_id"], extra_text, reply_to=target_id,
                             ),
                             f"{source_id}->{dest['dest_id']}-edit-retry",
                         )
-                    logger.info("Caption/quote edited on forwarded post | %s -> %s | header=shown", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]))
+                        edited_in_place = False
+                    if edited_in_place:
+                        logger.info("Caption/quote edited on forwarded post | %s -> %s | header=shown", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]))
+                    else:
+                        logger.info("Caption/quote resent as reply (forward not editable) | %s -> %s | header=shown", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]))
             except Exception as edit_exc:
                 logger.warning("Could not edit caption on forwarded post for %s (header still shown): %s", dest.get("dest_name", dest["dest_id"]), edit_exc)
         logger.info("Forwarded %d message(s) | %s -> %s | header=shown | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
