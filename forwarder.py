@@ -426,7 +426,7 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 # no delete and no second post are possible.
                 if kucoin_mode_setting == "button":
                     logger.info(
-                        "KuCoin button mode unsupported by Telegram, using single copy | %s -> %s",
+                        "KuCoin single copy with button | %s -> %s",
                         dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]),
                     )
                 copy_caption = ""
