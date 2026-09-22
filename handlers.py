@@ -64,7 +64,7 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
             "/filter - Set message type/keyword filter\n"
             "/caption - Set custom caption\n"
             "/dedup - Toggle duplicate skipping per mapping\n"
-            "/header - Show/hide the 'Forwarded from' header per mapping\n"
+            "/header - Header policy (always shown)\n"
             "/stats - Show statistics\n"
             "/help - Show this message\n"
         )
@@ -153,9 +153,8 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
         lines = ["**All Mappings:**\n"]
         for m in mappings:
             status = "ON" if m["active"] else "OFF"
-            header_tag = " [no-header]" if m.get("hide_header") else ""
             lines.append(
-                f"[{status}]{header_tag} **#{m['id']}**\n"
+                f"[{status}]**#{m['id']}**\n"
                 f"  Source: {m['source_name']} (`{m['source_id']}`)\n"
                 f"  Dest: {m['dest_name']} (`{m['dest_id']}`)\n"
             )
@@ -256,16 +255,17 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
             return
 
         mapping_id = int(event.pattern_match.group(1))
-        hide = event.pattern_match.group(2).lower() == "hide"
-
+        
         mapping = db.get_mapping(mapping_id)
         if not mapping:
             await event.reply(f"Mapping #{mapping_id} not found.")
             return
 
-        db.update_filter(mapping_id, hide_header=int(hide))
-        state = "**HIDDEN** (no 'Forwarded from' line)" if hide else "**SHOWN** (normal forward header)"
-        await event.reply(f"Forward header for mapping **#{mapping_id}** is now {state}.")
+        await event.reply(
+            f"Forward header for mapping **#{mapping_id}** is always "
+            f"**SHOWN** - every post carries Forwarded from. "
+            f"Header hide is disabled by policy."
+        )
 
     # -- /stats ---------------------------------------------------------
     @bot_client.on(events.NewMessage(pattern=r"^/stats$"))

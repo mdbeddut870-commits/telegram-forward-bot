@@ -132,6 +132,18 @@ async def _remove_configured_sources(client: TelegramClient) -> None:
     logger.info("Source removal complete: %d mapping(s) removed", removed)
 
 
+async def _prune_task() -> None:
+    """Periodically prune old dedup hashes so seen_posts stays bounded."""
+    while True:
+        try:
+            removed = db.prune_seen_posts()
+            if removed:
+                logger.info("Pruned %d old dedup hash(es)", removed)
+        except Exception:
+            logger.exception("Dedup prune failed")
+        await asyncio.sleep(24 * 3600)
+
+
 async def _run_client_forever(client: TelegramClient, name: str) -> None:
     """Keep a Telegram client running after a transient disconnect.
 
@@ -235,6 +247,7 @@ async def _run_bot() -> None:
     register_bot_handlers(bot_client)
     register_forward_handler(user_client)
     start_source_polling(user_client)
+    asyncio.create_task(_prune_task())
 
     logger.info("Both clients running. Press Ctrl+C to stop.")
 

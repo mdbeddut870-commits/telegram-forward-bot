@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import logging
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 from telethon import TelegramClient, events
@@ -47,7 +48,11 @@ _send_semaphore = asyncio.Semaphore(config.SEND_CONCURRENCY)
 # Telegram send (flood wait / retry), otherwise every later post is delayed
 # by however long the current batch takes.
 _background_tasks: "set[asyncio.Task]" = set()
-_claimed_messages: set[tuple[int, int]] = set()
+# (source_id, message_id) pairs already dispatched.  Bounded LRU so a
+# long-running process cannot grow memory forever; 20k entries is plenty
+# for 30 sources while live dedup (seen_posts in SQLite) covers restarts.
+_CLAIMED_MAX_ENTRIES = 20000
+_claimed_messages: "OrderedDict[tuple[int, int], None]" = OrderedDict()
 _source_poll_task: asyncio.Task | None = None
 _mapped_source_ids: set[int] = set()
 _mapped_sources_loaded_at: float = 0.0
@@ -88,9 +93,27 @@ def _claim_message(source_id: int, message_id: int) -> bool:
     """Claim a message once so push and polling cannot forward duplicates."""
     key = (source_id, message_id)
     if key in _claimed_messages:
+        # Refresh recency so hot keys are not evicted.
+        _claimed_messages.move_to_end(key)
         return False
-    _claimed_messages.add(key)
+    _claimed_messages[key] = None
+    while len(_claimed_messages) > _CLAIMED_MAX_ENTRIES:
+        _claimed_messages.popitem(last=False)
     return True
+
+
+def _mark_claimed(source_id: int, message_id: int) -> None:
+    """Pre-mark a message as seen (startup seeding); bounded like claims."""
+    _claimed_messages[(source_id, message_id)] = None
+    _claimed_messages.move_to_end((source_id, message_id))
+    while len(_claimed_messages) > _CLAIMED_MAX_ENTRIES:
+        _claimed_messages.popitem(last=False)
+
+
+def _attributed_copy_text(source_name, text: str) -> str:
+    """Prefix fallback copies so no post ever arrives without attribution."""
+    body = (text or "").strip()
+    return f"Forwarded from {source_name}\n\n{body}".strip()
 
 
 def _is_mapped_source(event) -> bool:
@@ -327,7 +350,8 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             if quoted_text and not strip_caption:
                 fallback_caption = f"{quoted_text}\n\n{fallback_caption}".strip() if fallback_caption else quoted_text
             copy_text = fallback_caption if fallback_caption else original_text
-            attributed = f"Forwarded from {dest.get('source_name', source_id)}\n\n{copy_text}".strip()
+            source_name = dest.get("source_name", source_id)
+            attributed = _attributed_copy_text(source_name, copy_text)
             if matching_messages[0].media:
                 await _send_with_retry(
                     lambda: client.send_message(
@@ -339,7 +363,9 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                     if message.media:
                         await _send_with_retry(
                             lambda m=message: client.send_message(
-                                dest["dest_id"], m.text or "", file=m.media,
+                                dest["dest_id"],
+                                _attributed_copy_text(source_name, m.text or ""),
+                                file=m.media,
                             ),
                             f"{source_id}->{dest['dest_id']}-copy",
                         )
@@ -357,7 +383,7 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 )
             logger.info("Copied %d message(s) with source line | %s -> %s | header=manual | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
         if not forwarded_ok:
-            return
+            return []
         # Caption/quote changes are applied by EDITING the just-forwarded
         # copy in place, so the "Forwarded from" header stays visible.
         # No second header-less send_message is ever emitted.
@@ -551,7 +577,7 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
                 )
             if initial:
                 for message in messages:
-                    _claimed_messages.add((source_id, message.id))
+                    _mark_claimed(source_id, message.id)
                 return
             for message in sorted(messages, key=lambda item: item.id):
                 if getattr(message, "action", None) is not None:
