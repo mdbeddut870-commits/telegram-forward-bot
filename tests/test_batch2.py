@@ -59,6 +59,11 @@ def test_header_guarantee():
             self.date = "now"
             self.reply_to = None
 
+        async def edit(self, text):
+            calls.append(("edit", self.id, text))
+            self.text = text
+            return self
+
     calls = []
 
     class FakeClient:
@@ -72,7 +77,10 @@ def test_header_guarantee():
             return FakeMsg(999, text)
 
         async def edit_message(self, dest, msg, text):
-            calls.append(("edit", dest, getattr(msg, "id", msg), text))
+            calls.append(("legacy-edit", dest, getattr(msg, "id", msg), text))
+
+        async def get_messages(self, peer, ids=None):
+            return None
 
     class FailClient(FakeClient):
         async def forward_messages(self, *a, **k):

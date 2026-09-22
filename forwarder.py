@@ -430,10 +430,27 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 sent_list = sent if isinstance(sent, list) else [sent]
                 target = sent_list[0] if sent_list else None
                 if target is not None:
-                    await _send_with_retry(
-                        lambda: client.edit_message(dest["dest_id"], target, extra_text),
-                        f"{source_id}->{dest['dest_id']}-edit",
-                    )
+                    target_id = getattr(target, "id", target)
+                    try:
+                        fwd_msg = await client.get_messages(dest["dest_id"], ids=target_id)
+                    except Exception:
+                        fwd_msg = None
+                    if fwd_msg is None:
+                        fwd_msg = target
+                    try:
+                        await _send_with_retry(
+                            lambda: fwd_msg.edit(extra_text),
+                            f"{source_id}->{dest['dest_id']}-edit",
+                        )
+                    except Exception:
+                        # Some forwarded copies (service/album edge cases) are
+                        # not editable: resend the text so the link still lands.
+                        await _send_with_retry(
+                            lambda: client.send_message(
+                                dest["dest_id"], extra_text, reply_to=target_id,
+                            ),
+                            f"{source_id}->{dest['dest_id']}-edit-retry",
+                        )
                     logger.info("Caption/quote edited on forwarded post | %s -> %s | header=shown", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]))
             except Exception as edit_exc:
                 logger.warning("Could not edit caption on forwarded post for %s (header still shown): %s", dest.get("dest_name", dest["dest_id"]), edit_exc)
