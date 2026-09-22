@@ -55,11 +55,16 @@ CATCH_UP: bool = (
 # avoid ForwardMessagesRequest flood-waits from burst traffic.
 SEND_CONCURRENCY: int = max(1, int(os.getenv("SEND_CONCURRENCY", "16")))
 
-# History polling every few seconds triggers Telegram GetHistory flood waits.
-# Keep this opt-in and limited to explicitly diagnosed sources.
+# History polling covers Telegram channel push-update delays.  Polling every
+# few seconds is safe when each request is small and concurrent history
+# fetches are capped; a large sequential scan starves live updates.
 SOURCE_POLL_INTERVAL_SECONDS: float = float(
-    os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "15")
+    os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "10")
 )
+# Cap concurrent GetHistory calls so 30 sources polled every few seconds do
+# not trigger Telegram flood waits in bursts.
+SOURCE_POLL_CONCURRENCY: int = max(1, int(os.getenv("SOURCE_POLL_CONCURRENCY", "6")))
+SOURCE_POLL_HISTORY_LIMIT: int = max(1, int(os.getenv("SOURCE_POLL_HISTORY_LIMIT", "5")))
 SOURCE_POLL_SOURCE_IDS: set[int] = {
     int(value.strip())
     for value in os.getenv("SOURCE_POLL_SOURCE_IDS", "").split(",")

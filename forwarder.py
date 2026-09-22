@@ -471,18 +471,30 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
         for mapping in db.list_mappings()
         if mapping["active"]
     }
-    # Do not re-fetch every configured channel's history. Telegram's live update
-    # stream is the fast path; this fallback is only for explicitly diagnosed IDs.
-    source_ids = sorted(mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
+    # Poll every explicitly diagnosed source. When SOURCE_POLL_ALL_MAPPED is
+    # enabled, poll every active mapping so a late Telegram channel update is
+    # detected within one polling interval instead of minutes later.
+    if config.SOURCE_POLL_ALL_MAPPED:
+        source_ids = sorted(mapped_source_ids)
+    else:
+        # Do not re-fetch every configured channel's history. Telegram's live
+        # update stream is the fast path; the fallback is only for explicitly
+        # diagnosed IDs.
+        source_ids = sorted(mapped_source_ids & config.SOURCE_POLL_SOURCE_IDS)
     if not source_ids:
         logger.info("Source polling fallback disabled; relying on Telegram updates")
         return
+
+    poll_semaphore = asyncio.Semaphore(max(1, config.SOURCE_POLL_CONCURRENCY))
 
     async def poll_source(source_id: int, initial: bool = False) -> None:
         try:
             # Keep each request small. A large sequential history scan was
             # starving live updates and caused old posts to arrive in bursts.
-            messages = await client.get_messages(source_id, limit=10)
+            async with poll_semaphore:
+                messages = await client.get_messages(
+                    source_id, limit=max(1, config.SOURCE_POLL_HISTORY_LIMIT)
+                )
             if initial:
                 for message in messages:
                     _claimed_messages.add((source_id, message.id))
@@ -516,7 +528,14 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
     )
     while True:
         await asyncio.sleep(config.SOURCE_POLL_INTERVAL_SECONDS)
+        cycle_started = asyncio.get_running_loop().time()
         await asyncio.gather(*(poll_source(source_id) for source_id in source_ids))
+        cycle_seconds = asyncio.get_running_loop().time() - cycle_started
+        if cycle_seconds > config.SOURCE_POLL_INTERVAL_SECONDS:
+            logger.warning(
+                "Polling cycle took %.1fs for %d source(s); longer than interval %.1fs",
+                cycle_seconds, len(source_ids), config.SOURCE_POLL_INTERVAL_SECONDS,
+            )
 
 
 def start_source_polling(client: TelegramClient) -> None:
