@@ -126,6 +126,74 @@ def _mentions_kucoin(*texts: str) -> bool:
     return False
 
 
+def _kucoin_button():
+    """Inline URL button for KuCoin posts. None when URL is not configured."""
+    url = getattr(config, "KUCOIN_REGISTER_URL", "").strip()
+    text = getattr(config, "KUCOIN_BUTTON_TEXT", "🔗 Register / Join Now").strip() or "Register"
+    if not url:
+        return None
+    try:
+        from telethon import Button
+        return [[Button.url(text, url)]]
+    except Exception:
+        pass
+    # Fallback for TL layer changes (Telethon 1.45 BotAPI-style schema):
+    # KeyboardButton(text, type=InlineButtonTypeUrl(url)).
+    try:
+        from telethon.tl.types import (
+            InlineButtonTypeUrl,
+            KeyboardButton,
+            KeyboardButtonRow,
+            ReplyInlineMarkup,
+        )
+        row = KeyboardButtonRow(
+            buttons=[KeyboardButton(text=text, type=InlineButtonTypeUrl(url=url))]
+        )
+        return ReplyInlineMarkup(rows=[row])
+    except Exception:
+        return None
+
+
+async def _try_attach_kucoin_button(client, dest_id, sent) -> bool:
+    """Attach the register button to just-forwarded message(s). No text edit."""
+    markup = _kucoin_button()
+    if markup is None:
+        return False
+    sent_list = sent if isinstance(sent, list) else [sent]
+    target = sent_list[0] if sent_list else None
+    if target is None:
+        return False
+    target_id = getattr(target, "id", target)
+    try:
+        fwd_msg = await client.get_messages(dest_id, ids=target_id)
+    except Exception:
+        fwd_msg = None
+    if fwd_msg is None:
+        fwd_msg = target
+    edit = getattr(fwd_msg, "edit", None)
+    if edit is None:
+        return False
+    # Button edit must surface failures: _send_with_retry swallows them
+    # after 5 attempts, which would leave a bare forward standing.
+    last_exc: Exception | None = None
+    for attempt in range(MAX_SEND_ATTEMPTS):
+        try:
+            await edit(buttons=markup)
+            return True
+        except (FloodWaitError, RpcCallFailError, ServerError, TimedOutError) as exc:
+            last_exc = exc
+            if isinstance(exc, FloodWaitError):
+                await asyncio.sleep(min(float(exc.seconds or 0) + 1.0, 60.0))
+            else:
+                await asyncio.sleep(RETRY_BASE_SECONDS * (2 ** attempt))
+        except Exception as exc:
+            last_exc = exc
+            break
+    if last_exc is not None:
+        raise last_exc
+    return False
+
+
 def _with_kucoin_register_line(text: str) -> str:
     """Append the referral line once; leave non-KuCoin or already-tagged text alone."""
     body = (text or "").strip()
@@ -359,6 +427,43 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 # attach custom text to a forward, so forward+edit produced TWO
                 # posts (bare forward, then link as reply when edit failed).
                 # One attributed copy guarantees the link is in the FIRST post.
+                kucoin_mode_setting = getattr(config, "KUCOIN_MODE", "copy").strip().lower()
+                if kucoin_mode_setting == "button":
+                    # Button mode: native forward first (blue header), then
+                    # attach the register button via reply_markup-only edit
+                    # (text untouched). ANY failure falls back to the single
+                    # attributed copy below; the bare forward is deleted first
+                    # so two posts never remain.
+                    button_sent = None
+                    try:
+                        button_sent = await _send_with_retry(
+                            lambda: client.forward_messages(
+                                dest["dest_id"], msg_ids, from_peer=source_id, drop_author=False,
+                            ),
+                            f"{source_id}->{dest['dest_id']}-kucoin-fwd",
+                        )
+                        button_attached = await _try_attach_kucoin_button(client, dest["dest_id"], button_sent)
+                        if not button_attached:
+                            raise RuntimeError("button edit reported failure")
+                        logger.info("KuCoin forwarded with register button | %s -> %s | header=shown | source_time=%s | forwarded_at=%s", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(first, "date", "unknown"), datetime.now(timezone.utc).isoformat())
+                        try:
+                            db.bump_stat(mapping_id, "forwarded")
+                        except Exception:
+                            pass
+                        return []
+                    except Exception as button_exc:
+                        logger.warning(
+                            "KuCoin button path failed for %s, falling back to single copy: %s",
+                            dest.get("dest_name", dest["dest_id"]), button_exc,
+                        )
+                        if button_sent is not None:
+                            try:
+                                cleanup_list = button_sent if isinstance(button_sent, list) else [button_sent]
+                                await client.delete_messages(
+                                    dest["dest_id"], [getattr(m, "id", m) for m in cleanup_list],
+                                )
+                            except Exception:
+                                pass
                 copy_caption = ""
                 if add_caption or strip_caption:
                     copy_caption = _prepare_caption(first, add_caption, strip_caption) or ""

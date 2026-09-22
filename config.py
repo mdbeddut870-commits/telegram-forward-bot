@@ -117,6 +117,14 @@ KUCOIN_REGISTER_LINE: str = os.getenv(
     "KUCOIN_REGISTER_LINE",
     "Register Link = https://www.kucoin.com/pt/gemslot/MHA?fromHome=true&rcode=CXEEW12K&utm_source=gemslot",
 )
+KUCOIN_REGISTER_URL: str = os.getenv(
+    "KUCOIN_REGISTER_URL",
+    "https://www.kucoin.com/pt/gemslot/MHA?fromHome=true&rcode=CXEEW12K&utm_source=gemslot",
+)
+KUCOIN_BUTTON_TEXT: str = os.getenv("KUCOIN_BUTTON_TEXT", "🔗 Register / Join Now")
+# "button" = native forward + inline URL button (blue header kept).
+# "copy" = single attributed copy with register line (no second post).
+KUCOIN_MODE: str = os.getenv("KUCOIN_MODE", "button").strip().lower()
 KUCOIN_KEYWORDS: list[str] = [
     value.strip().lower()
     for value in os.getenv("KUCOIN_KEYWORDS", "kucoin").split(",")

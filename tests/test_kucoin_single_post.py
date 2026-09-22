@@ -1,4 +1,8 @@
-"""KuCoin single-post regression: link must land in the FIRST post, no second post."""
+"""KuCoin single-post regression: link must land in the FIRST post, no second post.
+
+NOTE: legacy test written for KUCOIN_MODE=copy. Button mode is covered by
+/tmp/kucoin_btn_test.py. Force copy mode here so both suites stay green.
+"""
 import asyncio
 import os
 import sys
@@ -8,6 +12,8 @@ REPO = "/Users/mdriponislam/Forwading/telegram-forward-bot"
 sys.path.insert(0, REPO)
 os.environ["DB_PATH"] = tempfile.mkdtemp() + "/kucoin_single.db"
 
+import config
+config.KUCOIN_MODE = "copy"
 import forwarder
 
 LINK = "https://www.kucoin.com/pt/gemslot/MHA"
