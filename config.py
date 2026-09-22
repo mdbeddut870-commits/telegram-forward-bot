@@ -110,6 +110,19 @@ AUTO_SOURCE_USERNAMES: list[str] = [
 AUTO_SOURCE_DEST_ID: int = _get_int("AUTO_SOURCE_DEST_ID", 0)
 REMOVE_SOURCE_IDS: set[int] = _get_int_set("REMOVE_SOURCE_IDS")
 
+# -- KuCoin promo footer --
+# Appended to forwarded copies whose original text mentions KuCoin.
+# Override via env without a code change if the referral link rotates.
+KUCOIN_REGISTER_LINE: str = os.getenv(
+    "KUCOIN_REGISTER_LINE",
+    "Register Link = https://www.kucoin.com/pt/gemslot/MHA?fromHome=true&rcode=CXEEW12K&utm_source=gemslot",
+)
+KUCOIN_KEYWORDS: list[str] = [
+    value.strip().lower()
+    for value in os.getenv("KUCOIN_KEYWORDS", "kucoin").split(",")
+    if value.strip()
+]
+
 
 def validate() -> None:
     """Raise if any required config is missing."""

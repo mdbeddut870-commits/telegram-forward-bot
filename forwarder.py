@@ -116,6 +116,27 @@ def _attributed_copy_text(source_name, text: str) -> str:
     return f"Forwarded from {source_name}\n\n{body}".strip()
 
 
+def _mentions_kucoin(*texts: str) -> bool:
+    """True when any original text mentions a KuCoin keyword (case-insensitive)."""
+    keywords = getattr(config, "KUCOIN_KEYWORDS", ["kucoin"]) or ["kucoin"]
+    for text in texts:
+        lowered = (text or "").lower()
+        if lowered and any(kw for kw in keywords if kw and kw in lowered):
+            return True
+    return False
+
+
+def _with_kucoin_register_line(text: str) -> str:
+    """Append the referral line once; leave non-KuCoin or already-tagged text alone."""
+    body = (text or "").strip()
+    register_line = getattr(config, "KUCOIN_REGISTER_LINE", "").strip()
+    if not register_line or not _mentions_kucoin(body):
+        return text
+    if register_line in body or "CXEEW12K" in body:
+        return text
+    return f"{body}\n\n{register_line}".strip() if body else register_line
+
+
 def _is_mapped_source(event) -> bool:
     """Fast event filter: ignore updates from unrelated chats."""
     global _mapped_source_ids, _mapped_sources_loaded_at
@@ -351,6 +372,7 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             if quoted_text and not strip_caption:
                 fallback_caption = f"{quoted_text}\n\n{fallback_caption}".strip() if fallback_caption else quoted_text
             copy_text = fallback_caption if fallback_caption else original_text
+            copy_text = _with_kucoin_register_line(copy_text)
             source_name = dest.get("source_name", source_id)
             attributed = _attributed_copy_text(source_name, copy_text)
             if matching_messages[0].media:
@@ -365,7 +387,7 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                         await _send_with_retry(
                             lambda m=message: client.send_message(
                                 dest["dest_id"],
-                                _attributed_copy_text(source_name, m.text or ""),
+                                _attributed_copy_text(source_name, _with_kucoin_register_line(m.text or "")),
                                 file=m.media,
                             ),
                             f"{source_id}->{dest['dest_id']}-copy",
@@ -397,6 +419,12 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             extra_text = _prepare_caption(first, add_caption, strip_caption) or ""
         if quoted_text and not strip_caption:
             extra_text = f"{quoted_text}\n\n{extra_text}".strip() if extra_text else quoted_text
+        kucoin_triggered = _mentions_kucoin(*[(m.text or "") for m in matching_messages])
+        if kucoin_triggered:
+            base_for_link = extra_text if extra_text else original_text
+            linked = _with_kucoin_register_line(base_for_link)
+            if linked != base_for_link:
+                extra_text = linked
         if extra_text and extra_text != original_text:
             try:
                 sent_list = sent if isinstance(sent, list) else [sent]
