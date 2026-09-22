@@ -54,7 +54,15 @@ def init_db() -> None:
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS seen_posts (
+                content_hash TEXT PRIMARY KEY,
+                source_id    INTEGER NOT NULL DEFAULT 0,
+                first_seen   TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
         """)
+        # Migration for databases created before dedup existed.
+        _migrate_dedup_column()
 
 
 # -- Mapping CRUD --
@@ -134,7 +142,17 @@ def get_destinations_for(source_id: int) -> list[dict]:
             "WHERE m.source_id = ? AND m.active = 1",
             (source_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        dests = [dict(r) for r in rows]
+        if not dests:
+            return dests
+        # Ensure the per-mapping dedup toggle is present even when the live
+        # Railway DB was created before the dedup migration ran.
+        with get_conn() as conn:
+            _migrate_dedup_column()
+            for dest in dests:
+                if "dedup" not in dest:
+                    dest["dedup"] = _get_filter_dedup(conn, dest["id"])
+        return dests
 
 
 # -- Filter CRUD --
@@ -142,9 +160,9 @@ def get_destinations_for(source_id: int) -> list[dict]:
 def update_filter(mapping_id: int, **kwargs) -> bool:
     """
     Update filter for a mapping.
-    Accepted kwargs: filter_type, keywords, add_caption, strip_caption
+    Accepted kwargs: filter_type, keywords, add_caption, strip_caption, dedup
     """
-    allowed = {"filter_type", "keywords", "add_caption", "strip_caption"}
+    allowed = {"filter_type", "keywords", "add_caption", "strip_caption", "dedup"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return False
@@ -207,6 +225,60 @@ def remove_mappings_for_sources(source_ids: set[int]) -> int:
         placeholders = ",".join("?" for _ in source_ids)
         cur = conn.execute(f"DELETE FROM mappings WHERE source_id IN ({placeholders})", tuple(source_ids))
         return cur.rowcount
+
+
+# -- Deduplication: cross-source repeat detection ----------------------
+
+DEDUP_WINDOW_HOURS = 24
+
+
+def _migrate_dedup_column() -> None:
+    """Add filters.dedup to databases created before dedup existed."""
+    try:
+        with get_conn() as conn:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(filters)")}
+            if "dedup" not in cols:
+                conn.execute("ALTER TABLE filters ADD COLUMN dedup INTEGER NOT NULL DEFAULT 1")
+    except Exception:
+        pass  # best-effort migration; forward path still works without it
+
+
+def _get_filter_dedup(conn, mapping_id: int) -> bool:
+    """Per-mapping dedup toggle; defaults to ON when column/row is missing."""
+    try:
+        row = conn.execute(
+            "SELECT dedup FROM filters WHERE mapping_id = ?", (mapping_id,)
+        ).fetchone()
+        return row is None or bool(row["dedup"])
+    except Exception:
+        return True
+
+
+def prune_seen_posts(max_age_hours: int = DEDUP_WINDOW_HOURS) -> int:
+    """Delete hashes older than the window. Returns rows removed."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM seen_posts WHERE first_seen < datetime('now', ?)",
+            (f"-{max_age_hours} hours",),
+        )
+        return cur.rowcount
+
+
+def check_and_mark_seen(content_hash: str, source_id: int) -> bool:
+    """Return True if hash was already seen (duplicate), else record and return False."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM seen_posts WHERE content_hash = ? AND "
+            "first_seen >= datetime('now', ?)",
+            (content_hash, f"-{DEDUP_WINDOW_HOURS} hours"),
+        ).fetchone()
+        if row:
+            return True
+        conn.execute(
+            "INSERT OR REPLACE INTO seen_posts (content_hash, source_id) VALUES (?, ?)",
+            (content_hash, source_id),
+        )
+        return False
 
 
 # -- Bot state (key-value store) --

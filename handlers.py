@@ -63,6 +63,7 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
             "/list - List all mappings\n"
             "/filter - Set message type/keyword filter\n"
             "/caption - Set custom caption\n"
+            "/dedup - Toggle duplicate skipping per mapping\n"
             "/stats - Show statistics\n"
             "/help - Show this message\n"
         )
@@ -227,6 +228,24 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
             f"**Caption {mode} for #{mapping_id}**\n"
             f"  Caption: `{rest or '(removed)'}`"
         )
+
+    # -- /dedup <mapping_id> <on|off> ------------------------------------
+    @bot_client.on(events.NewMessage(pattern=r"^/dedup\s+(\d+)\s+(on|off)$"))
+    async def cmd_dedup(event: events.NewMessage.Event):
+        if not _is_admin(event.sender_id):
+            return
+
+        mapping_id = int(event.pattern_match.group(1))
+        enable = event.pattern_match.group(2).lower() == "on"
+
+        mapping = db.get_mapping(mapping_id)
+        if not mapping:
+            await event.reply(f"Mapping #{mapping_id} not found.")
+            return
+
+        db.update_filter(mapping_id, dedup=int(enable))
+        state = "**ON** (repeats skipped)" if enable else "**OFF** (all posts forwarded)"
+        await event.reply(f"Deduplication for mapping **#{mapping_id}** is now {state}.")
 
     # -- /stats ---------------------------------------------------------
     @bot_client.on(events.NewMessage(pattern=r"^/stats$"))

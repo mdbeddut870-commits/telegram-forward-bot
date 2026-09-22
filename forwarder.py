@@ -7,7 +7,9 @@ posts or non-command group messages due to privacy mode.
 """
 
 import asyncio
+import hashlib
 import logging
+import re
 from datetime import datetime, timezone
 
 from telethon import TelegramClient, events
@@ -214,6 +216,58 @@ async def _send_with_retry(operation, description: str):
 
 
 # ---------------------------------------------------------------------------
+# Deduplication: skip cross-source repeats (same post in 2-3 channels)
+# ---------------------------------------------------------------------------
+
+DEDUP_MIN_TEXT_CHARS = 20  # shorter texts are too generic to dedup safely
+_URL_RE = re.compile(r"https?://\S+|t\.me/\S+|@\w+", re.IGNORECASE)
+
+
+def _normalize_text(text: str) -> str:
+    """Lowercase, strip URLs/handles/emoji-ish noise, collapse whitespace."""
+    text = (text or "").lower()
+    text = _URL_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _media_fingerprint(message) -> str:
+    """Best-effort stable fingerprint for media (size + largest dimension)."""
+    try:
+        media = getattr(message, "media", None)
+        doc = getattr(media, "document", None)
+        if doc is not None:
+            return f"doc:{getattr(doc, 'size', '?')}"
+        photo = getattr(media, "photo", None)
+        if photo is not None:
+            sizes = getattr(photo, "sizes", None) or []
+            if sizes:
+                biggest = max(sizes, key=lambda s: getattr(s, "w", 0) * getattr(s, "h", 0))
+                return f"photo:{getattr(biggest, 'w', '?')}x{getattr(biggest, 'h', '?')}"
+        if media is not None:
+            return f"media:{type(media).__name__}"
+    except Exception:
+        pass
+    return "nomedia"
+
+
+def _content_hash(messages: list) -> "str | None":
+    """Hash normalized text (+media fingerprint) of a batch. None = not dedupable."""
+    parts: list[str] = []
+    for message in messages:
+        norm = _normalize_text(getattr(message, "text", None) or getattr(message, "message", None) or "")
+        if len(norm) >= DEDUP_MIN_TEXT_CHARS:
+            parts.append(f"t:{norm}")
+        fingerprint = _media_fingerprint(message)
+        if fingerprint != "nomedia":
+            parts.append(f"m:{fingerprint}")
+    if not parts:
+        return None
+    digest = hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:32]
+    return digest
+
+
+# ---------------------------------------------------------------------------
 # Forward one message or one grouped album to all matching destinations
 # ---------------------------------------------------------------------------
 
@@ -278,6 +332,20 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
 async def _forward_batch(client: TelegramClient, messages: list, source_id: int) -> None:
     """Forward a batch to all destinations concurrently."""
     destinations = db.get_destinations_for(source_id)
+    if not destinations:
+        return
+    # Cross-source dedup: if another source already forwarded the same
+    # content within 24h, skip every destination for this batch.
+    dedup_on = any(bool(dest.get("dedup", 1)) for dest in destinations)
+    if dedup_on:
+        content_hash = _content_hash(messages)
+        if content_hash and db.check_and_mark_seen(content_hash, source_id):
+            logger.info(
+                "DEDUP skip: message %s from %s already forwarded within %dh (hash=%s)",
+                [getattr(m, "id", "?") for m in messages],
+                source_id, db.DEDUP_WINDOW_HOURS, content_hash,
+            )
+            return
     if destinations:
         await asyncio.gather(*(
             _forward_to_destination(client, messages, source_id, dest)
