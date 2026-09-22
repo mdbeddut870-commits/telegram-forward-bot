@@ -303,27 +303,82 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
         else:
             preserved_text = quoted_text or original_text
         # Native server-side forward. Pass integer IDs + from_peer so the
-        # message keeps its media/caption/album intact; per-mapping
-        # hide_header uses Telethon's drop_author (server hides the
-        # "Forwarded from" author attribution) instead of a copy.
+        # message keeps its media/caption/album intact AND always shows the
+        # native "Forwarded from" header (drop_author is never used).
         msg_ids = [message.id for message in matching_messages]
-        hide_header = bool(dest.get("hide_header", 0))
-        await _send_with_retry(
-            lambda: client.forward_messages(dest["dest_id"], msg_ids, from_peer=source_id, drop_author=hide_header),
-            f"{source_id}->{dest['dest_id']}",
-        )
-
+        forwarded_ok = False
+        try:
+            sent = await _send_with_retry(
+                lambda: client.forward_messages(dest["dest_id"], msg_ids, from_peer=source_id, drop_author=False),
+                f"{source_id}->{dest['dest_id']}",
+            )
+            forwarded_ok = True
+        except Exception as forward_exc:
+            # Source blocks forwarding (protected content) or retries
+            # exhausted: send a copy that still carries an explicit source
+            # line, so no post ever arrives without attribution.
+            logger.warning(
+                "Native forward failed for %s, copying with source line: %s",
+                dest.get("dest_name", dest["dest_id"]), forward_exc,
+            )
+            fallback_caption = ""
+            if add_caption or strip_caption:
+                fallback_caption = _prepare_caption(first, add_caption, strip_caption) or ""
+            if quoted_text and not strip_caption:
+                fallback_caption = f"{quoted_text}\n\n{fallback_caption}".strip() if fallback_caption else quoted_text
+            copy_text = fallback_caption if fallback_caption else original_text
+            attributed = f"Forwarded from {dest.get('source_name', source_id)}\n\n{copy_text}".strip()
+            if matching_messages[0].media:
+                await _send_with_retry(
+                    lambda: client.send_message(
+                        dest["dest_id"], attributed, file=matching_messages[0].media,
+                    ),
+                    f"{source_id}->{dest['dest_id']}-copy",
+                )
+                for message in matching_messages[1:]:
+                    if message.media:
+                        await _send_with_retry(
+                            lambda m=message: client.send_message(
+                                dest["dest_id"], m.text or "", file=m.media,
+                            ),
+                            f"{source_id}->{dest['dest_id']}-copy",
+                        )
+                    else:
+                        await _send_with_retry(
+                            lambda m=message: client.forward_messages(
+                                dest["dest_id"], m.id, from_peer=source_id, drop_author=False,
+                            ),
+                            f"{source_id}->{dest['dest_id']}-copy",
+                        )
+            else:
+                await _send_with_retry(
+                    lambda: client.send_message(dest["dest_id"], attributed),
+                    f"{source_id}->{dest['dest_id']}-copy",
+                )
+            logger.info("Copied %d message(s) with source line | %s -> %s | header=manual | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
+        if not forwarded_ok:
+            return
+        # Caption/quote changes are applied by EDITING the just-forwarded
+        # copy in place, so the "Forwarded from" header stays visible.
+        # No second header-less send_message is ever emitted.
         extra_text = ""
         if add_caption or strip_caption:
             extra_text = _prepare_caption(first, add_caption, strip_caption) or ""
         if quoted_text and not strip_caption:
             extra_text = f"{quoted_text}\n\n{extra_text}".strip() if extra_text else quoted_text
-        if extra_text:
-            await _send_with_retry(
-                lambda: client.send_message(dest["dest_id"], extra_text),
-                f"{source_id}->{dest['dest_id']}-extra",
-            )
-        logger.info("Forwarded %d message(s) | %s -> %s | header=%s | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), "hidden" if hide_header else "shown", getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
+        if extra_text and extra_text != original_text:
+            try:
+                sent_list = sent if isinstance(sent, list) else [sent]
+                target = sent_list[0] if sent_list else None
+                if target is not None:
+                    await _send_with_retry(
+                        lambda: client.edit_message(dest["dest_id"], target, extra_text),
+                        f"{source_id}->{dest['dest_id']}-edit",
+                    )
+                    logger.info("Caption/quote edited on forwarded post | %s -> %s | header=shown", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]))
+            except Exception as edit_exc:
+                logger.warning("Could not edit caption on forwarded post for %s (header still shown): %s", dest.get("dest_name", dest["dest_id"]), edit_exc)
+        logger.info("Forwarded %d message(s) | %s -> %s | header=shown | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
     except Exception as exc:
         logger.error("Failed to forward to %s: %s", dest.get("dest_name", dest["dest_id"]), exc)
 
