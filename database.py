@@ -61,6 +61,15 @@ def init_db() -> None:
                 source_id    INTEGER NOT NULL DEFAULT 0,
                 first_seen   TEXT    NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS fwd_stats (
+                day         TEXT NOT NULL,
+                mapping_id  INTEGER NOT NULL DEFAULT 0,
+                forwarded   INTEGER NOT NULL DEFAULT 0,
+                failed      INTEGER NOT NULL DEFAULT 0,
+                dedup_skip  INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, mapping_id)
+            );
         """)
         # Migration for databases created before dedup existed.
         _migrate_dedup_column()
@@ -310,6 +319,54 @@ def check_and_mark_seen(content_hash: str, source_id: int) -> bool:
             (content_hash, source_id),
         )
         return False
+
+
+# -- Forwarding stats (per-day, per-mapping counters) ------------------
+
+def _today() -> str:
+    from datetime import date
+    return date.today().isoformat()
+
+
+def bump_stat(mapping_id: int, field: str, day: str = "") -> None:
+    """Increment a fwd_stats counter. Field: forwarded|failed|dedup_skip."""
+    if field not in ("forwarded", "failed", "dedup_skip"):
+        raise ValueError(f"unknown stat field: {field}")
+    day = day or _today()
+    with get_conn() as conn:
+        conn.execute(
+            f"INSERT INTO fwd_stats (day, mapping_id, {field}) VALUES (?, ?, 1) "
+            f"ON CONFLICT(day, mapping_id) DO UPDATE SET {field} = {field} + 1",
+            (day, mapping_id),
+        )
+
+
+def get_stats(days: int = 7) -> dict:
+    """Aggregate fwd_stats for the last N days: totals + per-day + top mappings."""
+    with get_conn() as conn:
+        totals = conn.execute(
+            "SELECT COALESCE(SUM(forwarded),0) f, COALESCE(SUM(failed),0) fa, "
+            "COALESCE(SUM(dedup_skip),0) d FROM fwd_stats "
+            "WHERE day >= date('now', ?)",
+            (f"-{max(1, days)} days",),
+        ).fetchone()
+        per_day = conn.execute(
+            "SELECT day, SUM(forwarded) f, SUM(failed) fa, SUM(dedup_skip) d "
+            "FROM fwd_stats WHERE day >= date('now', ?) GROUP BY day ORDER BY day",
+            (f"-{max(1, days)} days",),
+        ).fetchall()
+        top = conn.execute(
+            "SELECT mapping_id, SUM(forwarded) f, SUM(failed) fa FROM fwd_stats "
+            "WHERE day >= date('now', ?) GROUP BY mapping_id ORDER BY f DESC LIMIT 5",
+            (f"-{max(1, days)} days",),
+        ).fetchall()
+    return {
+        "forwarded": totals["f"],
+        "failed": totals["fa"],
+        "dedup_skip": totals["d"],
+        "per_day": [dict(r) for r in per_day],
+        "top": [dict(r) for r in top],
+    }
 
 
 # -- Bot state (key-value store) --

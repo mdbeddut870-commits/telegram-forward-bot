@@ -267,8 +267,8 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
             f"Header hide is disabled by policy."
         )
 
-    # -- /stats ---------------------------------------------------------
-    @bot_client.on(events.NewMessage(pattern=r"^/stats$"))
+    # -- /stats [days] --------------------------------------------------
+    @bot_client.on(events.NewMessage(pattern=r"^/stats(?:\s+(\d+))?$"))
     async def cmd_stats(event: events.NewMessage.Event):
         if not _is_admin(event.sender_id):
             return
@@ -277,11 +277,32 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
         active = sum(1 for m in mappings if m["active"])
         paused = len(mappings) - active
 
-        await event.reply(
-            "**Bot Statistics**\n\n"
-            f"  Total mappings: **{len(mappings)}**\n"
-            f"  Active: **{active}**\n"
-            f"  Paused: **{paused}**\n"
-        )
+        raw_days = event.pattern_match.group(1)
+        days = max(1, min(30, int(raw_days))) if raw_days else 7
+        try:
+            stats = db.get_stats(days)
+        except Exception:
+            stats = {"forwarded": 0, "failed": 0, "dedup_skip": 0, "per_day": [], "top": []}
+
+        lines = [
+            "**Bot Statistics**",
+            "",
+            f"  Mappings: **{len(mappings)}** (active **{active}**, paused **{paused}**)",
+            f"  Last {days}d forwarded: **{stats['forwarded']}**",
+            f"  Failed: **{stats['failed']}** | Dedup skipped: **{stats['dedup_skip']}**",
+        ]
+        if stats["per_day"]:
+            lines.append("")
+            lines.append("  Per day:")
+            for row in stats["per_day"][-7:]:
+                lines.append(f"    {row['day']}: +{row['f']} fwd / {row['fa']} fail / {row['d']} dedup")
+        if stats["top"]:
+            names = {m["id"]: (m.get("source_name") or m.get("source_id")) for m in mappings}
+            lines.append("")
+            lines.append("  Top mappings:")
+            for row in stats["top"]:
+                label = names.get(row["mapping_id"], row["mapping_id"])
+                lines.append(f"    #{row['mapping_id']} ({label}): {row['f']} fwd")
+        await event.reply("\n".join(lines))
 
     logger.info("Bot command handlers registered.")

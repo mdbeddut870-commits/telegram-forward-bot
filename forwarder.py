@@ -330,6 +330,7 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
         # native "Forwarded from" header (drop_author is never used).
         msg_ids = [message.id for message in matching_messages]
         forwarded_ok = False
+        mapping_id = dest.get("mapping_id", 0)
         try:
             sent = await _send_with_retry(
                 lambda: client.forward_messages(dest["dest_id"], msg_ids, from_peer=source_id, drop_author=False),
@@ -382,6 +383,10 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                     f"{source_id}->{dest['dest_id']}-copy",
                 )
             logger.info("Copied %d message(s) with source line | %s -> %s | header=manual | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
+            try:
+                db.bump_stat(mapping_id, "forwarded")
+            except Exception:
+                pass
         if not forwarded_ok:
             return []
         # Caption/quote changes are applied by EDITING the just-forwarded
@@ -405,7 +410,15 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             except Exception as edit_exc:
                 logger.warning("Could not edit caption on forwarded post for %s (header still shown): %s", dest.get("dest_name", dest["dest_id"]), edit_exc)
         logger.info("Forwarded %d message(s) | %s -> %s | header=shown | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
+        try:
+            db.bump_stat(mapping_id, "forwarded")
+        except Exception:
+            pass
     except Exception as exc:
+        try:
+            db.bump_stat(dest.get("mapping_id", 0), "failed")
+        except Exception:
+            pass
         logger.error("Failed to forward to %s: %s", dest.get("dest_name", dest["dest_id"]), exc)
 
 
@@ -420,6 +433,11 @@ async def _forward_batch(client: TelegramClient, messages: list, source_id: int)
     if dedup_on:
         content_hash = _content_hash(messages)
         if content_hash and db.check_and_mark_seen(content_hash, source_id):
+            for _d in destinations:
+                try:
+                    db.bump_stat(_d.get("mapping_id", 0), "dedup_skip")
+                except Exception:
+                    pass
             logger.info(
                 "DEDUP skip: message %s from %s already forwarded within %dh (hash=%s)",
                 [getattr(m, "id", "?") for m in messages],

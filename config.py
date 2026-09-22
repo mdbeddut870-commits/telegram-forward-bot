@@ -7,8 +7,48 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _get_int(name: str, default: int) -> int:
+    """Read an integer env var, falling back to default on bad input."""
+    raw = os.getenv(name, "")
+    try:
+        return int(raw) if raw.strip() else default
+    except (ValueError, AttributeError):
+        return default
+
+
+def _get_float(name: str, default: float) -> float:
+    """Read a float env var, falling back to default on bad input."""
+    raw = os.getenv(name, "")
+    try:
+        return float(raw) if raw.strip() else default
+    except (ValueError, AttributeError):
+        return default
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    """Read a boolean env var ('1', 'true', 'yes', 'on' are truthy)."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+def _get_int_set(name: str) -> set[int]:
+    """Read a comma-separated int set, skipping bad entries."""
+    result: set[int] = set()
+    for value in os.getenv(name, "").split(","):
+        value = value.strip()
+        if not value:
+            continue
+        try:
+            result.add(int(value))
+        except ValueError:
+            continue
+    return result
+
 # -- Telegram API --
-API_ID: int = int(os.getenv("API_ID", "0"))
+API_ID: int = _get_int("API_ID", 0)
 API_HASH: str = os.getenv("API_HASH", "")
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 PHONE: str = os.getenv("PHONE", "")
@@ -31,51 +71,35 @@ DB_PATH: str = os.getenv("DB_PATH", "data/bot.db")
 # -- Forwarding behavior --
 # When enabled, messages posted by the bot's own user account in a source
 # chat are forwarded too. Off by default to avoid accidental loops.
-FORWARD_OWN_MESSAGES: bool = (
-    os.getenv("FORWARD_OWN_MESSAGES", "").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+FORWARD_OWN_MESSAGES: bool = _get_bool("FORWARD_OWN_MESSAGES", False)
 
 # Raw update logging is useful while diagnosing Telegram delivery, but writing
 # one log line for every channel update can itself delay the update loop during
 # a backlog. Keep it opt-in for production.
-LOG_RAW_UPDATES: bool = (
-    os.getenv("LOG_RAW_UPDATES", "").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+LOG_RAW_UPDATES: bool = _get_bool("LOG_RAW_UPDATES", False)
 
 # Prioritize new posts over replaying an offline backlog.
-CATCH_UP: bool = (
-    os.getenv("CATCH_UP", "false").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+CATCH_UP: bool = _get_bool("CATCH_UP", False)
 
 # Concurrent sends reduce delay across multiple destinations.
 # 16 is the sweet spot: enough parallelism for 30 sources, low enough to
 # avoid ForwardMessagesRequest flood-waits from burst traffic.
-SEND_CONCURRENCY: int = max(1, int(os.getenv("SEND_CONCURRENCY", "16")))
+SEND_CONCURRENCY: int = max(1, _get_int("SEND_CONCURRENCY", 16))
 
 # History polling covers Telegram channel push-update delays.  Polling every
 # few seconds is safe when each request is small and concurrent history
 # fetches are capped; a large sequential scan starves live updates.
-SOURCE_POLL_INTERVAL_SECONDS: float = float(
-    os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "10")
+SOURCE_POLL_INTERVAL_SECONDS: float = max(
+    1.0, _get_float("SOURCE_POLL_INTERVAL_SECONDS", 10)
 )
 # Cap concurrent GetHistory calls so 30 sources polled every few seconds do
 # not trigger Telegram flood waits in bursts.  12 keeps a 30-source cycle
 # around 5-6s; at 6 the cycle took ~13s and delayed detection.
-SOURCE_POLL_CONCURRENCY: int = max(1, int(os.getenv("SOURCE_POLL_CONCURRENCY", "12")))
-SOURCE_POLL_HISTORY_LIMIT: int = max(1, int(os.getenv("SOURCE_POLL_HISTORY_LIMIT", "5")))
-SOURCE_POLL_SOURCE_IDS: set[int] = {
-    int(value.strip())
-    for value in os.getenv("SOURCE_POLL_SOURCE_IDS", "").split(",")
-    if value.strip()
-}
+SOURCE_POLL_CONCURRENCY: int = max(1, _get_int("SOURCE_POLL_CONCURRENCY", 12))
+SOURCE_POLL_HISTORY_LIMIT: int = max(1, _get_int("SOURCE_POLL_HISTORY_LIMIT", 5))
+SOURCE_POLL_SOURCE_IDS: set[int] = _get_int_set("SOURCE_POLL_SOURCE_IDS")
 
-SOURCE_POLL_ALL_MAPPED: bool = (
-    os.getenv("SOURCE_POLL_ALL_MAPPED", "false").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+SOURCE_POLL_ALL_MAPPED: bool = _get_bool("SOURCE_POLL_ALL_MAPPED", False)
 
 # Optional public usernames resolved automatically on startup.
 AUTO_SOURCE_USERNAMES: list[str] = [
@@ -83,12 +107,8 @@ AUTO_SOURCE_USERNAMES: list[str] = [
     for value in os.getenv("AUTO_SOURCE_USERNAMES", "").split(",")
     if value.strip()
 ]
-AUTO_SOURCE_DEST_ID: int = int(os.getenv("AUTO_SOURCE_DEST_ID", "0"))
-REMOVE_SOURCE_IDS: set[int] = {
-    int(value.strip())
-    for value in os.getenv("REMOVE_SOURCE_IDS", "").split(",")
-    if value.strip()
-}
+AUTO_SOURCE_DEST_ID: int = _get_int("AUTO_SOURCE_DEST_ID", 0)
+REMOVE_SOURCE_IDS: set[int] = _get_int_set("REMOVE_SOURCE_IDS")
 
 
 def validate() -> None:
