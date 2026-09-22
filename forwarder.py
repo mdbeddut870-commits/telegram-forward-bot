@@ -259,7 +259,6 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             lambda: client.forward_messages(dest["dest_id"], msg_ids, from_peer=source_id),
             f"{source_id}->{dest['dest_id']}",
         )
-        await _verify_last_forward_header(client, dest["dest_id"], source_id)
 
         extra_text = ""
         if add_caption or strip_caption:
@@ -284,28 +283,6 @@ async def _forward_batch(client: TelegramClient, messages: list, source_id: int)
             _forward_to_destination(client, messages, source_id, dest)
             for dest in destinations
         ))
-
-
-async def _verify_last_forward_header(client: TelegramClient, dest_id: int, source_id: int) -> None:
-    """Check whether the latest dest message carries Telegram's fwd_from header."""
-    try:
-        recent = await client.get_messages(dest_id, limit=3)
-        for item in recent:
-            if getattr(item, "fwd_from", None) is not None:
-                from_id = getattr(getattr(item.fwd_from, "from_id", None), "channel_id", None)
-                logger.warning(
-                    "DIAG dest=%s latest msg %s fwd_from present (from_channel=%s, expected_source=%s) date=%s text=%.60r",
-                    dest_id, item.id, from_id, source_id, item.date, item.text or "",
-                )
-                return
-        ids = [item.id for item in recent] if recent else []
-        logger.warning(
-            "DIAG dest=%s latest msgs %s have NO fwd_from header (expected_source=%s) — copy mode suspected",
-            dest_id, ids, source_id,
-        )
-    except Exception:
-        logger.exception("DIAG forward-header check failed for dest %s", dest_id)
-
 
 
 async def forward_message(client: TelegramClient, message, source_id: int) -> None:
