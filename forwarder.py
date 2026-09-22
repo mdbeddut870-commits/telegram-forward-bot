@@ -428,42 +428,17 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 # posts (bare forward, then link as reply when edit failed).
                 # One attributed copy guarantees the link is in the FIRST post.
                 kucoin_mode_setting = getattr(config, "KUCOIN_MODE", "copy").strip().lower()
+                # NOTE (live-test result 2026-09-22): Telegram rejects ANY edit
+                # (text or reply_markup-only) on channel forwards of other
+                # channels' posts with MessageIdInvalidError. So button mode
+                # can never attach to a native forward -> go straight to the
+                # single attributed copy below. No forward is emitted here, so
+                # no delete and no second post are possible.
                 if kucoin_mode_setting == "button":
-                    # Button mode: native forward first (blue header), then
-                    # attach the register button via reply_markup-only edit
-                    # (text untouched). ANY failure falls back to the single
-                    # attributed copy below; the bare forward is deleted first
-                    # so two posts never remain.
-                    button_sent = None
-                    try:
-                        button_sent = await _send_with_retry(
-                            lambda: client.forward_messages(
-                                dest["dest_id"], msg_ids, from_peer=source_id, drop_author=False,
-                            ),
-                            f"{source_id}->{dest['dest_id']}-kucoin-fwd",
-                        )
-                        button_attached = await _try_attach_kucoin_button(client, dest["dest_id"], button_sent)
-                        if not button_attached:
-                            raise RuntimeError("button edit reported failure")
-                        logger.info("KuCoin forwarded with register button | %s -> %s | header=shown | source_time=%s | forwarded_at=%s", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(first, "date", "unknown"), datetime.now(timezone.utc).isoformat())
-                        try:
-                            db.bump_stat(mapping_id, "forwarded")
-                        except Exception:
-                            pass
-                        return []
-                    except Exception as button_exc:
-                        logger.warning(
-                            "KuCoin button path failed for %s, falling back to single copy: %s",
-                            dest.get("dest_name", dest["dest_id"]), button_exc,
-                        )
-                        if button_sent is not None:
-                            try:
-                                cleanup_list = button_sent if isinstance(button_sent, list) else [button_sent]
-                                await client.delete_messages(
-                                    dest["dest_id"], [getattr(m, "id", m) for m in cleanup_list],
-                                )
-                            except Exception:
-                                pass
+                    logger.info(
+                        "KuCoin button mode unsupported by Telegram, using single copy | %s -> %s",
+                        dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]),
+                    )
                 copy_caption = ""
                 if add_caption or strip_caption:
                     copy_caption = _prepare_caption(first, add_caption, strip_caption) or ""
