@@ -62,8 +62,9 @@ SOURCE_POLL_INTERVAL_SECONDS: float = float(
     os.getenv("SOURCE_POLL_INTERVAL_SECONDS", "10")
 )
 # Cap concurrent GetHistory calls so 30 sources polled every few seconds do
-# not trigger Telegram flood waits in bursts.
-SOURCE_POLL_CONCURRENCY: int = max(1, int(os.getenv("SOURCE_POLL_CONCURRENCY", "6")))
+# not trigger Telegram flood waits in bursts.  12 keeps a 30-source cycle
+# around 5-6s; at 6 the cycle took ~13s and delayed detection.
+SOURCE_POLL_CONCURRENCY: int = max(1, int(os.getenv("SOURCE_POLL_CONCURRENCY", "12")))
 SOURCE_POLL_HISTORY_LIMIT: int = max(1, int(os.getenv("SOURCE_POLL_HISTORY_LIMIT", "5")))
 SOURCE_POLL_SOURCE_IDS: set[int] = {
     int(value.strip())

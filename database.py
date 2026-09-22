@@ -47,7 +47,8 @@ def init_db() -> None:
                 filter_type   TEXT    NOT NULL DEFAULT 'all',
                 keywords      TEXT    NOT NULL DEFAULT '',
                 add_caption   TEXT    NOT NULL DEFAULT '',
-                strip_caption INTEGER NOT NULL DEFAULT 0
+                strip_caption INTEGER NOT NULL DEFAULT 0,
+                hide_header   INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS bot_state (
@@ -63,6 +64,7 @@ def init_db() -> None:
         """)
         # Migration for databases created before dedup existed.
         _migrate_dedup_column()
+        _migrate_hide_header_column()
 
 
 # -- Mapping CRUD --
@@ -113,9 +115,13 @@ def toggle_mapping(mapping_id: int) -> Optional[bool]:
 
 
 def list_mappings() -> list[dict]:
-    """Return all mappings ordered by id."""
+    """Return all mappings ordered by id, with the header-hide flag."""
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM mappings ORDER BY id").fetchall()
+        rows = conn.execute(
+            "SELECT m.*, f.hide_header "
+            "FROM mappings m LEFT JOIN filters f ON f.mapping_id = m.id "
+            "ORDER BY m.id"
+        ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -123,7 +129,7 @@ def get_mapping(mapping_id: int) -> Optional[dict]:
     """Return a single mapping with its filter, or None."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT m.*, f.filter_type, f.keywords, f.add_caption, f.strip_caption "
+            "SELECT m.*, f.filter_type, f.keywords, f.add_caption, f.strip_caption, f.hide_header "
             "FROM mappings m "
             "LEFT JOIN filters f ON f.mapping_id = m.id "
             "WHERE m.id = ?",
@@ -134,9 +140,12 @@ def get_mapping(mapping_id: int) -> Optional[dict]:
 
 def get_destinations_for(source_id: int) -> list[dict]:
     """Return all active destinations for a given source chat."""
+    # Migrations first: the live DB may predate the dedup/hide_header columns.
+    _migrate_dedup_column()
+    _migrate_hide_header_column()
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT m.*, f.filter_type, f.keywords, f.add_caption, f.strip_caption "
+            "SELECT m.*, f.filter_type, f.keywords, f.add_caption, f.strip_caption, f.hide_header "
             "FROM mappings m "
             "LEFT JOIN filters f ON f.mapping_id = m.id "
             "WHERE m.source_id = ? AND m.active = 1",
@@ -145,13 +154,13 @@ def get_destinations_for(source_id: int) -> list[dict]:
         dests = [dict(r) for r in rows]
         if not dests:
             return dests
-        # Ensure the per-mapping dedup toggle is present even when the live
-        # Railway DB was created before the dedup migration ran.
+        # Ensure per-mapping toggles are present even as plain keys.
         with get_conn() as conn:
-            _migrate_dedup_column()
             for dest in dests:
                 if "dedup" not in dest:
                     dest["dedup"] = _get_filter_dedup(conn, dest["id"])
+                if "hide_header" not in dest:
+                    dest["hide_header"] = _get_filter_hide_header(conn, dest["id"])
         return dests
 
 
@@ -160,9 +169,9 @@ def get_destinations_for(source_id: int) -> list[dict]:
 def update_filter(mapping_id: int, **kwargs) -> bool:
     """
     Update filter for a mapping.
-    Accepted kwargs: filter_type, keywords, add_caption, strip_caption, dedup
+    Accepted kwargs: filter_type, keywords, add_caption, strip_caption, dedup, hide_header
     """
-    allowed = {"filter_type", "keywords", "add_caption", "strip_caption", "dedup"}
+    allowed = {"filter_type", "keywords", "add_caption", "strip_caption", "dedup", "hide_header"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
         return False
@@ -241,6 +250,28 @@ def _migrate_dedup_column() -> None:
                 conn.execute("ALTER TABLE filters ADD COLUMN dedup INTEGER NOT NULL DEFAULT 1")
     except Exception:
         pass  # best-effort migration; forward path still works without it
+
+
+def _migrate_hide_header_column() -> None:
+    """Add filters.hide_header to databases created before it existed."""
+    try:
+        with get_conn() as conn:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(filters)")}
+            if "hide_header" not in cols:
+                conn.execute("ALTER TABLE filters ADD COLUMN hide_header INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass  # best-effort migration; forward path still works without it
+
+
+def _get_filter_hide_header(conn, mapping_id: int) -> bool:
+    """Per-mapping hide_header toggle; defaults to False (header shown) when missing."""
+    try:
+        row = conn.execute(
+            "SELECT hide_header FROM filters WHERE mapping_id = ?", (mapping_id,)
+        ).fetchone()
+        return bool(row["hide_header"]) if row is not None else False
+    except Exception:
+        return False
 
 
 def _get_filter_dedup(conn, mapping_id: int) -> bool:

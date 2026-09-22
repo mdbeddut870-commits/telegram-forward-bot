@@ -302,15 +302,14 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
             preserved_text = f"{quoted_text}\n\n{original_text}"
         else:
             preserved_text = quoted_text or original_text
-        # Always create a native Telegram forward first so the source header is
-        # never lost. Custom caption/reply options are sent as an additional
-        # message instead of replacing the native forward.
-        # Pass integer IDs + from_peer so Telegram applies a true server-side
-        # forward (with the "Forwarded from" header) rather than rebuilding
-        # the message as a copy.
+        # Native server-side forward. Pass integer IDs + from_peer so the
+        # message keeps its media/caption/album intact; per-mapping
+        # hide_header uses Telethon's drop_author (server hides the
+        # "Forwarded from" author attribution) instead of a copy.
         msg_ids = [message.id for message in matching_messages]
+        hide_header = bool(dest.get("hide_header", 0))
         await _send_with_retry(
-            lambda: client.forward_messages(dest["dest_id"], msg_ids, from_peer=source_id),
+            lambda: client.forward_messages(dest["dest_id"], msg_ids, from_peer=source_id, drop_author=hide_header),
             f"{source_id}->{dest['dest_id']}",
         )
 
@@ -324,7 +323,7 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 lambda: client.send_message(dest["dest_id"], extra_text),
                 f"{source_id}->{dest['dest_id']}-extra",
             )
-        logger.info("Forwarded %d message(s) | %s -> %s | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
+        logger.info("Forwarded %d message(s) | %s -> %s | header=%s | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), "hidden" if hide_header else "shown", getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
     except Exception as exc:
         logger.error("Failed to forward to %s: %s", dest.get("dest_name", dest["dest_id"]), exc)
 
@@ -527,15 +526,19 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
         len(source_ids), config.SOURCE_POLL_INTERVAL_SECONDS,
     )
     while True:
-        await asyncio.sleep(config.SOURCE_POLL_INTERVAL_SECONDS)
+        # Subtract the cycle duration from the sleep so the polling period
+        # stays close to the configured interval.  Sleeping the full interval
+        # on top of a ~13s cycle produced a ~21s detection gap.
         cycle_started = asyncio.get_running_loop().time()
         await asyncio.gather(*(poll_source(source_id) for source_id in source_ids))
         cycle_seconds = asyncio.get_running_loop().time() - cycle_started
+        idle_seconds = config.SOURCE_POLL_INTERVAL_SECONDS - cycle_seconds
         if cycle_seconds > config.SOURCE_POLL_INTERVAL_SECONDS:
             logger.warning(
                 "Polling cycle took %.1fs for %d source(s); longer than interval %.1fs",
                 cycle_seconds, len(source_ids), config.SOURCE_POLL_INTERVAL_SECONDS,
             )
+        await asyncio.sleep(max(0.5, idle_seconds))
 
 
 def start_source_polling(client: TelegramClient) -> None:

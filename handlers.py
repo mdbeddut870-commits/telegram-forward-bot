@@ -64,6 +64,7 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
             "/filter - Set message type/keyword filter\n"
             "/caption - Set custom caption\n"
             "/dedup - Toggle duplicate skipping per mapping\n"
+            "/header - Show/hide the 'Forwarded from' header per mapping\n"
             "/stats - Show statistics\n"
             "/help - Show this message\n"
         )
@@ -152,8 +153,9 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
         lines = ["**All Mappings:**\n"]
         for m in mappings:
             status = "ON" if m["active"] else "OFF"
+            header_tag = " [no-header]" if m.get("hide_header") else ""
             lines.append(
-                f"[{status}] **#{m['id']}**\n"
+                f"[{status}]{header_tag} **#{m['id']}**\n"
                 f"  Source: {m['source_name']} (`{m['source_id']}`)\n"
                 f"  Dest: {m['dest_name']} (`{m['dest_id']}`)\n"
             )
@@ -246,6 +248,24 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
         db.update_filter(mapping_id, dedup=int(enable))
         state = "**ON** (repeats skipped)" if enable else "**OFF** (all posts forwarded)"
         await event.reply(f"Deduplication for mapping **#{mapping_id}** is now {state}.")
+
+    # -- /header <mapping_id> <hide|show> ---------------------------------
+    @bot_client.on(events.NewMessage(pattern=r"^/header\s+(\d+)\s+(hide|show)$"))
+    async def cmd_header(event: events.NewMessage.Event):
+        if not _is_admin(event.sender_id):
+            return
+
+        mapping_id = int(event.pattern_match.group(1))
+        hide = event.pattern_match.group(2).lower() == "hide"
+
+        mapping = db.get_mapping(mapping_id)
+        if not mapping:
+            await event.reply(f"Mapping #{mapping_id} not found.")
+            return
+
+        db.update_filter(mapping_id, hide_header=int(hide))
+        state = "**HIDDEN** (no 'Forwarded from' line)" if hide else "**SHOWN** (normal forward header)"
+        await event.reply(f"Forward header for mapping **#{mapping_id}** is now {state}.")
 
     # -- /stats ---------------------------------------------------------
     @bot_client.on(events.NewMessage(pattern=r"^/stats$"))
