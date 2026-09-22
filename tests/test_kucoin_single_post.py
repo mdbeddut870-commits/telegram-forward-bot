@@ -41,11 +41,11 @@ class FakeClient:
         return [FakeMsg(777, "fwd")]
 
     async def send_message(self, dest, text, **kw):
-        calls.append(("send", dest, text))
+        calls.append(("send", dest, text, kw.get("buttons")))
         return FakeMsg(999, text)
 
     async def send_file(self, dest, media, caption=None, **kw):
-        calls.append(("sendfile", dest, caption))
+        calls.append(("sendfile", dest, caption, kw.get("buttons")))
         return FakeMsg(999, caption)
 
     async def edit_message(self, *a, **k):
@@ -59,22 +59,24 @@ DEST = {"dest_id": -1, "source_name": "SRC", "dest_name": "DST",
         "filter_type": "all", "keywords": "", "add_caption": "",
         "strip_caption": 0, "hide_header": 0, "dedup": 0, "mapping_id": 1}
 
-# 1. KuCoin media post -> exactly ONE sendfile with link + source line
+# 1. KuCoin media post -> exactly ONE sendfile with link + source line + button
 calls.clear()
 r = asyncio.run(forwarder._forward_to_destination(
     FakeClient(), [FakeMsg(1, "KuCoin event live", media="m1")], 100, DEST))
 assert r == [], r
 assert len(calls) == 1 and calls[0][0] == "sendfile", calls
 assert "Forwarded from SRC" in calls[0][2] and LINK in calls[0][2], calls
+assert calls[0][3], f"inline button missing: {calls}"
 print("KUCOIN MEDIA SINGLE POST PASS")
 
-# 2. KuCoin text post -> exactly ONE send with link + source line
+# 2. KuCoin text post -> exactly ONE send with link + source line + button
 calls.clear()
 r = asyncio.run(forwarder._forward_to_destination(
     FakeClient(), [FakeMsg(2, "kucoin gemslot promo")], 100, DEST))
 assert r == [], r
 assert len(calls) == 1 and calls[0][0] == "send", calls
 assert "Forwarded from SRC" in calls[0][2] and LINK in calls[0][2], calls
+assert calls[0][3], f"inline button missing: {calls}"
 print("KUCOIN TEXT SINGLE POST PASS")
 
 # 3. Normal post -> native forward only, no link, no second post
@@ -84,7 +86,7 @@ r = asyncio.run(forwarder._forward_to_destination(
 assert len(calls) == 1 and calls[0][0] == "forward", calls
 print("NORMAL FORWARD PASS")
 
-# 4. KuCoin album -> every item carries the link, no forward call
+# 4. KuCoin album -> every item carries the link + button, no forward call
 calls.clear()
 r = asyncio.run(forwarder._forward_to_destination(
     FakeClient(),
@@ -93,6 +95,7 @@ r = asyncio.run(forwarder._forward_to_destination(
 assert r == [], r
 assert len(calls) == 2 and all(c[0] == "sendfile" for c in calls), calls
 assert all(LINK in c[2] for c in calls), calls
+assert all(c[3] for c in calls), f"inline button missing: {calls}"
 print("KUCOIN ALBUM PASS")
 
 print("ALL KUCOIN SINGLE-POST PASS")

@@ -126,38 +126,28 @@ def _mentions_kucoin(*texts: str) -> bool:
     return False
 
 
-def _kucoin_button():
-    """Inline URL button for KuCoin posts. None when URL is not configured."""
+def _kucoin_buttons():
+    """Inline URL button rows for KuCoin copies. [] when URL missing."""
     url = getattr(config, "KUCOIN_REGISTER_URL", "").strip()
     text = getattr(config, "KUCOIN_BUTTON_TEXT", "🔗 Register / Join Now").strip() or "Register"
     if not url:
-        return None
+        return []
     try:
         from telethon import Button
         return [[Button.url(text, url)]]
     except Exception:
-        pass
-    # Fallback for TL layer changes (Telethon 1.45 BotAPI-style schema):
-    # KeyboardButton(text, type=InlineButtonTypeUrl(url)).
-    try:
-        from telethon.tl.types import (
-            InlineButtonTypeUrl,
-            KeyboardButton,
-            KeyboardButtonRow,
-            ReplyInlineMarkup,
-        )
-        row = KeyboardButtonRow(
-            buttons=[KeyboardButton(text=text, type=InlineButtonTypeUrl(url=url))]
-        )
-        return ReplyInlineMarkup(rows=[row])
-    except Exception:
-        return None
+        return []
 
 
 async def _try_attach_kucoin_button(client, dest_id, sent) -> bool:
-    """Attach the register button to just-forwarded message(s). No text edit."""
-    markup = _kucoin_button()
-    if markup is None:
+    """Legacy helper (kept for tests): attach register button via edit.
+
+    No longer used in production — Telegram rejects ALL edits on channel
+    forwards of other channels' posts. The live path sends the button
+    together with the copy in ONE send call instead.
+    """
+    markup = _kucoin_buttons()
+    if not markup:
         return False
     sent_list = sent if isinstance(sent, list) else [sent]
     target = sent_list[0] if sent_list else None
@@ -448,11 +438,14 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 kucoin_text = _with_kucoin_register_line(kucoin_text)
                 kucoin_source = dest.get("source_name", source_id)
                 kucoin_attributed = _attributed_copy_text(kucoin_source, kucoin_text)
+                # Single copy WITH inline button in ONE send: own fresh message,
+                # so buttons= is accepted (unlike edits on channel forwards).
+                kucoin_buttons = _kucoin_buttons()
                 if matching_messages[0].media:
                     await _send_with_retry(
                         lambda: client.send_file(
                             dest["dest_id"], matching_messages[0].media,
-                            caption=kucoin_attributed,
+                            caption=kucoin_attributed, buttons=kucoin_buttons or None,
                         ),
                         f"{source_id}->{dest['dest_id']}-kucoin",
                     )
@@ -469,19 +462,23 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                             await _send_with_retry(
                                 lambda m=message, t=item_text: client.send_file(
                                     dest["dest_id"], m.media, caption=t,
+                                    buttons=kucoin_buttons or None,
                                 ),
                                 f"{source_id}->{dest['dest_id']}-kucoin",
                             )
                         else:
                             await _send_with_retry(
                                 lambda t=item_text: client.send_message(
-                                    dest["dest_id"], t,
+                                    dest["dest_id"], t, buttons=kucoin_buttons or None,
                                 ),
                                 f"{source_id}->{dest['dest_id']}-kucoin",
                             )
                 else:
                     await _send_with_retry(
-                        lambda: client.send_message(dest["dest_id"], kucoin_attributed),
+                        lambda: client.send_message(
+                            dest["dest_id"], kucoin_attributed,
+                            buttons=kucoin_buttons or None,
+                        ),
                         f"{source_id}->{dest['dest_id']}-kucoin",
                     )
                 logger.info("KuCoin copy sent with register link | %s -> %s | header=manual | source_time=%s | forwarded_at=%s", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(first, "date", "unknown"), datetime.now(timezone.utc).isoformat())
