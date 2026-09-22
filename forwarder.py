@@ -319,9 +319,6 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
         if quoted_text and not strip_caption:
             extra_text = f"{quoted_text}\n\n{extra_text}".strip() if extra_text else quoted_text
         if extra_text:
-            source_label = dest.get('source_name', source_id) or source_id
-            if not extra_text.lstrip().startswith('▶'):
-                extra_text = '▶ ' + str(source_label) + chr(10) + chr(10) + extra_text
             await _send_with_retry(
                 lambda: client.send_message(dest["dest_id"], extra_text),
                 f"{source_id}->{dest['dest_id']}-extra",
