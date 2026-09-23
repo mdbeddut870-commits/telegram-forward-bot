@@ -139,51 +139,6 @@ def _kucoin_buttons():
         return []
 
 
-async def _try_attach_kucoin_button(client, dest_id, sent) -> bool:
-    """Legacy helper (kept for tests): attach register button via edit.
-
-    No longer used in production — Telegram rejects ALL edits on channel
-    forwards of other channels' posts. The live path sends the button
-    together with the copy in ONE send call instead.
-    """
-    markup = _kucoin_buttons()
-    if not markup:
-        return False
-    sent_list = sent if isinstance(sent, list) else [sent]
-    target = sent_list[0] if sent_list else None
-    if target is None:
-        return False
-    target_id = getattr(target, "id", target)
-    try:
-        fwd_msg = await client.get_messages(dest_id, ids=target_id)
-    except Exception:
-        fwd_msg = None
-    if fwd_msg is None:
-        fwd_msg = target
-    edit = getattr(fwd_msg, "edit", None)
-    if edit is None:
-        return False
-    # Button edit must surface failures: _send_with_retry swallows them
-    # after 5 attempts, which would leave a bare forward standing.
-    last_exc: Exception | None = None
-    for attempt in range(MAX_SEND_ATTEMPTS):
-        try:
-            await edit(buttons=markup)
-            return True
-        except (FloodWaitError, RpcCallFailError, ServerError, TimedOutError) as exc:
-            last_exc = exc
-            if isinstance(exc, FloodWaitError):
-                await asyncio.sleep(min(float(exc.seconds or 0) + 1.0, 60.0))
-            else:
-                await asyncio.sleep(RETRY_BASE_SECONDS * (2 ** attempt))
-        except Exception as exc:
-            last_exc = exc
-            break
-    if last_exc is not None:
-        raise last_exc
-    return False
-
-
 def _with_kucoin_register_line(text: str) -> str:
     """Append the referral line once; leave non-KuCoin or already-tagged text alone."""
     body = (text or "").strip()
@@ -321,7 +276,9 @@ async def _send_with_retry(operation, description: str):
 # Deduplication: skip cross-source repeats (same post in 2-3 channels)
 # ---------------------------------------------------------------------------
 
-DEDUP_MIN_TEXT_CHARS = 20  # shorter texts are too generic to dedup safely
+# Configurable via DEDUP_MIN_TEXT_CHARS env (default 20). Shorter texts
+# are too generic to dedup safely.
+DEDUP_MIN_TEXT_CHARS = int(getattr(config, "DEDUP_MIN_TEXT_CHARS", 20))
 _URL_RE = re.compile(r"https?://\S+|t\.me/\S+|@\w+", re.IGNORECASE)
 
 
@@ -334,18 +291,28 @@ def _normalize_text(text: str) -> str:
 
 
 def _media_fingerprint(message) -> str:
-    """Best-effort stable fingerprint for media (size + largest dimension)."""
+    """Strong stable fingerprint: sha256 over stable media attributes.
+
+    Documents hash id|size|mime|file_name|duration|width|height and photos
+    hash photo.id|WxH (32 hex chars) so two different files that happen to
+    share a size no longer collide. Fallback sentinels (media:<type> /
+    nomedia) keep the _content_hash contract unchanged.
+    """
     try:
         media = getattr(message, "media", None)
         doc = getattr(media, "document", None)
         if doc is not None:
-            return f"doc:{getattr(doc, 'size', '?')}"
+            bits = "|".join(
+                str(getattr(doc, attr, ""))
+                for attr in ("id", "size", "mime_type", "file_name", "duration", "width", "height")
+            )
+            return "doc:" + hashlib.sha256(bits.encode("utf-8", "replace")).hexdigest()[:32]
         photo = getattr(media, "photo", None)
         if photo is not None:
             sizes = getattr(photo, "sizes", None) or []
-            if sizes:
-                biggest = max(sizes, key=lambda s: getattr(s, "w", 0) * getattr(s, "h", 0))
-                return f"photo:{getattr(biggest, 'w', '?')}x{getattr(biggest, 'h', '?')}"
+            biggest = max(sizes, key=lambda s: getattr(s, "w", 0) * getattr(s, "h", 0)) if sizes else None
+            bits = f"{getattr(photo, 'id', '')}|{getattr(biggest, 'w', '?')}x{getattr(biggest, 'h', '?')}"
+            return "photo:" + hashlib.sha256(bits.encode("utf-8", "replace")).hexdigest()[:32]
         if media is not None:
             return f"media:{type(media).__name__}"
     except Exception:
@@ -438,46 +405,71 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                 kucoin_text = _with_kucoin_register_line(kucoin_text)
                 kucoin_source = dest.get("source_name", source_id)
                 kucoin_attributed = _attributed_copy_text(kucoin_source, kucoin_text)
-                # Single copy WITH inline button in ONE send: own fresh message,
-                # so buttons= is accepted (unlike edits on channel forwards).
-                kucoin_buttons = _kucoin_buttons()
-                if matching_messages[0].media:
-                    await _send_with_retry(
-                        lambda: client.send_file(
-                            dest["dest_id"], matching_messages[0].media,
-                            caption=kucoin_attributed, buttons=kucoin_buttons or None,
-                        ),
-                        f"{source_id}->{dest['dest_id']}-kucoin",
-                    )
-                    for message in matching_messages[1:]:
-                        # Whole album belongs to a KuCoin post: force the link
-                        # on every item even if only the first mentions KuCoin.
-                        item_body = _with_kucoin_register_line(message.text or "")
-                        if "CXEEW12K" not in item_body:
-                            link_line = getattr(config, "KUCOIN_REGISTER_LINE", "").strip()
-                            if link_line:
-                                item_body = f"{(message.text or '').strip()}\n\n{link_line}".strip()
-                        item_text = _attributed_copy_text(kucoin_source, item_body)
-                        if message.media:
+                # Fresh copy message: buttons= is accepted here (Telegram
+                # rejects button EDITS on channel forwards). Attach only in
+                # explicit button mode; copy mode keeps the link in-caption.
+                kucoin_buttons = _kucoin_buttons() if kucoin_mode_setting == "button" else []
+                media_msgs = [m for m in matching_messages if m.media]
+                text_msgs = [m for m in matching_messages if not m.media]
+
+                def _kucoin_item_caption(message) -> str:
+                    # Force the Register Link on every item of a KuCoin post
+                    # even when only the first item mentions KuCoin.
+                    body = message.text or ""
+                    body = _with_kucoin_register_line(body)
+                    link_line = getattr(config, "KUCOIN_REGISTER_LINE", "").strip()
+                    if link_line and "CXEEW12K" not in body:
+                        body = f"{body.strip()}\n\n{link_line}".strip() if body.strip() else link_line
+                    return _attributed_copy_text(kucoin_source, body)
+
+                if media_msgs:
+                    captions = [
+                        kucoin_attributed if i == 0 else _kucoin_item_caption(message)
+                        for i, message in enumerate(media_msgs)
+                    ]
+                    if len(media_msgs) == 1:
+                        await _send_with_retry(
+                            lambda: client.send_file(
+                                dest["dest_id"], media_msgs[0].media,
+                                caption=captions[0], buttons=kucoin_buttons or None,
+                            ),
+                            f"{source_id}->{dest['dest_id']}-kucoin",
+                        )
+                    else:
+                        # ONE grouped send_file: keeps album order + album UI
+                        # and every caption still carries the Register Link.
+                        medias = [m.media for m in media_msgs]
+                        try:
                             await _send_with_retry(
-                                lambda m=message, t=item_text: client.send_file(
-                                    dest["dest_id"], m.media, caption=t,
+                                lambda: client.send_file(
+                                    dest["dest_id"], medias, captions=captions,
                                     buttons=kucoin_buttons or None,
                                 ),
                                 f"{source_id}->{dest['dest_id']}-kucoin",
                             )
-                        else:
-                            await _send_with_retry(
-                                lambda t=item_text: client.send_message(
-                                    dest["dest_id"], t, buttons=kucoin_buttons or None,
-                                ),
-                                f"{source_id}->{dest['dest_id']}-kucoin",
+                        except Exception as album_exc:
+                            # Fallback: per-item sends (loses grouping, keeps link).
+                            logger.warning(
+                                "KuCoin grouped album failed (%s); sending items individually",
+                                album_exc,
                             )
-                else:
+                            for media, caption in zip(medias, captions):
+                                await _send_with_retry(
+                                    lambda m=media, c=caption: client.send_file(
+                                        dest["dest_id"], m, caption=c,
+                                        buttons=kucoin_buttons or None,
+                                    ),
+                                    f"{source_id}->{dest['dest_id']}-kucoin",
+                                )
+                for message in text_msgs:
+                    item_text = (
+                        kucoin_attributed
+                        if message is matching_messages[0]
+                        else _kucoin_item_caption(message)
+                    )
                     await _send_with_retry(
-                        lambda: client.send_message(
-                            dest["dest_id"], kucoin_attributed,
-                            buttons=kucoin_buttons or None,
+                        lambda t=item_text: client.send_message(
+                            dest["dest_id"], t, buttons=kucoin_buttons or None,
                         ),
                         f"{source_id}->{dest['dest_id']}-kucoin",
                     )
@@ -571,20 +563,18 @@ async def _forward_to_destination(client: TelegramClient, messages: list, source
                             f"{source_id}->{dest['dest_id']}-edit",
                         )
                         edited_in_place = True
-                    except Exception:
-                        # Some forwarded copies (service/album edge cases) are
-                        # not editable: resend the text so the caption still lands.
-                        await _send_with_retry(
-                            lambda: client.send_message(
-                                dest["dest_id"], extra_text, reply_to=target_id,
-                            ),
-                            f"{source_id}->{dest['dest_id']}-edit-retry",
-                        )
+                    except Exception as edit_err:
+                        # Single-post guarantee: NEVER resend as a reply --
+                        # a reply produced the SECOND visible post in the
+                        # channel. Keep the original forward untouched.
                         edited_in_place = False
+                        logger.warning(
+                            "Could not edit caption (keeping original single post) | %s -> %s | header=shown | %s",
+                            dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]),
+                            edit_err,
+                        )
                     if edited_in_place:
                         logger.info("Caption/quote edited on forwarded post | %s -> %s | header=shown", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]))
-                    else:
-                        logger.info("Caption/quote resent as reply (forward not editable) | %s -> %s | header=shown", dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]))
             except Exception as edit_exc:
                 logger.warning("Could not edit caption on forwarded post for %s (header still shown): %s", dest.get("dest_name", dest["dest_id"]), edit_exc)
         logger.info("Forwarded %d message(s) | %s -> %s | header=shown | source_time=%s | forwarded_at=%s", len(matching_messages), dest.get("source_name", source_id), dest.get("dest_name", dest["dest_id"]), getattr(matching_messages[0], "date", "unknown"), datetime.now(timezone.utc).isoformat())
@@ -725,7 +715,8 @@ def register_forward_handler(client: TelegramClient) -> None:
                 return
 
             source_id = event.chat_id
-            if not any(_claim_message(source_id, message.id) for message in messages):
+            claimed = [_claim_message(source_id, message.id) for message in messages]
+            if not any(claimed):
                 return
 
             _spawn(forward_album(client, messages, source_id))
@@ -775,10 +766,15 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
                 for message in messages:
                     _mark_claimed(source_id, message.id)
                 return
+            albums: dict = {}
             for message in sorted(messages, key=lambda item: item.id):
                 if getattr(message, "action", None) is not None:
                     continue
-                if getattr(message, "grouped_id", None):
+                grouped = getattr(message, "grouped_id", None)
+                if grouped:
+                    # Group missed album items; recover the WHOLE album as
+                    # one batch below instead of skipping it entirely.
+                    albums.setdefault(grouped, []).append(message)
                     continue
                 if (message.text or "").startswith("/"):
                     continue
@@ -789,6 +785,16 @@ async def _poll_mapped_sources(client: TelegramClient) -> None:
                     message.id, source_id, getattr(message, "date", "unknown"),
                 )
                 _spawn(forward_message(client, message, source_id))
+            for grouped, album_msgs in albums.items():
+                claimed = [_claim_message(source_id, m.id) for m in album_msgs]
+                if not any(claimed):
+                    continue  # already handled live -> no duplicate album
+                logger.info(
+                    "Polled album %s (%d items) from source %s | source_time=%s",
+                    grouped, len(album_msgs), source_id,
+                    getattr(album_msgs[0], "date", "unknown"),
+                )
+                _spawn(forward_album(client, album_msgs, source_id))
         except FloodWaitError as exc:
             logger.warning("Polling flood wait for %s: %.1fs", source_id, float(exc.seconds))
         except Exception:

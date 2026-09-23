@@ -44,9 +44,10 @@ class FakeClient:
         calls.append(("send", dest, text, kw.get("buttons")))
         return FakeMsg(999, text)
 
-    async def send_file(self, dest, media, caption=None, **kw):
-        calls.append(("sendfile", dest, caption, kw.get("buttons")))
-        return FakeMsg(999, caption)
+    async def send_file(self, dest, media, caption=None, captions=None, **kw):
+        body = caption if caption is not None else captions
+        calls.append(("sendfile", dest, body, kw.get("buttons")))
+        return FakeMsg(999, body)
 
     async def edit_message(self, *a, **k):
         calls.append(("legacy-edit",))
@@ -66,7 +67,7 @@ r = asyncio.run(forwarder._forward_to_destination(
 assert r == [], r
 assert len(calls) == 1 and calls[0][0] == "sendfile", calls
 assert "Forwarded from SRC" in calls[0][2] and LINK in calls[0][2], calls
-assert calls[0][3], f"inline button missing: {calls}"
+assert not calls[0][3], f"copy mode must not attach a button: {calls}"
 print("KUCOIN MEDIA SINGLE POST PASS")
 
 # 2. KuCoin text post -> exactly ONE send with link + source line + button
@@ -76,7 +77,7 @@ r = asyncio.run(forwarder._forward_to_destination(
 assert r == [], r
 assert len(calls) == 1 and calls[0][0] == "send", calls
 assert "Forwarded from SRC" in calls[0][2] and LINK in calls[0][2], calls
-assert calls[0][3], f"inline button missing: {calls}"
+assert not calls[0][3], f"copy mode must not attach a button: {calls}"
 print("KUCOIN TEXT SINGLE POST PASS")
 
 # 3. Normal post -> native forward only, no link, no second post
@@ -86,16 +87,20 @@ r = asyncio.run(forwarder._forward_to_destination(
 assert len(calls) == 1 and calls[0][0] == "forward", calls
 print("NORMAL FORWARD PASS")
 
-# 4. KuCoin album -> every item carries the link + button, no forward call
+# 4. KuCoin album -> ONE grouped sendfile (order + album UI preserved),
+#    every caption carries the link, copy mode attaches no button
 calls.clear()
 r = asyncio.run(forwarder._forward_to_destination(
     FakeClient(),
     [FakeMsg(4, "kucoin drop", media="m1"), FakeMsg(5, "part2", media="m2")],
     100, DEST))
 assert r == [], r
-assert len(calls) == 2 and all(c[0] == "sendfile" for c in calls), calls
-assert all(LINK in c[2] for c in calls), calls
-assert all(c[3] for c in calls), f"inline button missing: {calls}"
-print("KUCOIN ALBUM PASS")
+assert len(calls) == 1 and calls[0][0] == "sendfile", calls
+grouped = calls[0][2]
+assert isinstance(grouped, list) and len(grouped) == 2, calls
+assert LINK in grouped[0] and "Forwarded from SRC" in grouped[0], calls
+assert LINK in grouped[1] and "Forwarded from SRC" in grouped[1], calls
+assert not calls[0][3], f"copy mode must not attach a button: {calls}"
+print("KUCOIN ALBUM GROUPED PASS")
 
 print("ALL KUCOIN SINGLE-POST PASS")

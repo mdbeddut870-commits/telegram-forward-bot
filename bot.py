@@ -12,6 +12,7 @@ due to privacy mode, so the user client is used for forwarding.
 
 import asyncio
 import logging
+import os
 import threading
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,10 +60,14 @@ class _HealthHandler(BaseHTTPRequestHandler):
 
 def _start_health_server() -> ThreadingHTTPServer:
     """Start the container readiness/liveness server in a daemon thread."""
-    server = ThreadingHTTPServer(("0.0.0.0", 8080), _HealthHandler)
+    try:
+        port = int(os.getenv("PORT", "8080") or 8080)
+    except ValueError:
+        port = 8080
+    server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
     thread = threading.Thread(target=server.serve_forever, name="health-server", daemon=True)
     thread.start()
-    logger.info("Health server listening on port 8080")
+    logger.info("Health server listening on port %d", port)
     return server
 
 

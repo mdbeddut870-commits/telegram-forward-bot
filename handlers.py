@@ -99,8 +99,8 @@ def register_bot_handlers(bot_client: TelegramClient) -> None:
             await event.reply("Both IDs must be integers.")
             return
 
-        source_name = await _resolve_name(bot_client, source_id)
-        dest_name = await _resolve_name(bot_client, dest_id)
+        source_name = await _resolve_name(bot_client, source_id) or str(source_id)
+        dest_name = await _resolve_name(bot_client, dest_id) or str(dest_id)
 
         row_id = db.add_mapping(source_id, dest_id, source_name, dest_name)
         if row_id:

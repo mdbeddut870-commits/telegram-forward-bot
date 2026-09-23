@@ -124,12 +124,20 @@ KUCOIN_REGISTER_URL: str = os.getenv(
 KUCOIN_BUTTON_TEXT: str = os.getenv("KUCOIN_BUTTON_TEXT", "🔗 Register / Join Now")
 # "button" = native forward + inline URL button (blue header kept).
 # "copy" = single attributed copy with register line (no second post).
-KUCOIN_MODE: str = os.getenv("KUCOIN_MODE", "button").strip().lower()
+KUCOIN_MODE: str = os.getenv("KUCOIN_MODE", "copy").strip().lower()
 KUCOIN_KEYWORDS: list[str] = [
     value.strip().lower()
     for value in os.getenv("KUCOIN_KEYWORDS", "kucoin").split(",")
     if value.strip()
 ]
+
+# -- Dedup --
+# Minimum normalized text length before a post is text-dedupable.
+# Shorter texts are too generic to match safely.
+try:
+    DEDUP_MIN_TEXT_CHARS: int = max(0, int(os.getenv("DEDUP_MIN_TEXT_CHARS", "20") or 20))
+except ValueError:
+    DEDUP_MIN_TEXT_CHARS = 20
 
 
 def validate() -> None:

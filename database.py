@@ -71,9 +71,10 @@ def init_db() -> None:
                 PRIMARY KEY (day, mapping_id)
             );
         """)
-        # Migration for databases created before dedup existed.
-        _migrate_dedup_column()
-        _migrate_hide_header_column()
+    # Migrations run AFTER the schema block, OUTSIDE the with: each
+    # migration opens its own connection (no nested get_conn()).
+    _migrate_dedup_column()
+    _migrate_hide_header_column()
 
 
 # -- Mapping CRUD --
@@ -153,24 +154,18 @@ def get_destinations_for(source_id: int) -> list[dict]:
     _migrate_dedup_column()
     _migrate_hide_header_column()
     with get_conn() as conn:
+        # Single query returns mapping + filter toggles (dedup, hide_header).
+        # No nested get_conn(): everything reuses the outer connection.
         rows = conn.execute(
-            "SELECT m.*, f.filter_type, f.keywords, f.add_caption, f.strip_caption, f.hide_header "
+            "SELECT m.*, f.filter_type, f.keywords, f.add_caption, f.strip_caption, "
+            "COALESCE(f.hide_header, 0) AS hide_header, "
+            "COALESCE(f.dedup, 1) AS dedup "
             "FROM mappings m "
             "LEFT JOIN filters f ON f.mapping_id = m.id "
             "WHERE m.source_id = ? AND m.active = 1",
             (source_id,),
         ).fetchall()
-        dests = [dict(r) for r in rows]
-        if not dests:
-            return dests
-        # Ensure per-mapping toggles are present even as plain keys.
-        with get_conn() as conn:
-            for dest in dests:
-                if "dedup" not in dest:
-                    dest["dedup"] = _get_filter_dedup(conn, dest["id"])
-                if "hide_header" not in dest:
-                    dest["hide_header"] = _get_filter_hide_header(conn, dest["id"])
-        return dests
+        return [dict(r) for r in rows]
 
 
 # -- Filter CRUD --
@@ -199,19 +194,6 @@ def remove_mappings_for_source(source_id: int) -> int:
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM mappings WHERE source_id = ?", (source_id,))
         return cur.rowcount
-
-
-def normalize_destination_ids(dest_id: int) -> int:
-    """Normalize legacy positive Telegram supergroup IDs and remove duplicates."""
-    canonical = -abs(dest_id) if abs(dest_id) >= 10**12 else dest_id
-    with get_conn() as conn:
-        if canonical != dest_id:
-            duplicate = conn.execute(
-                "SELECT id FROM mappings WHERE source_id = ? AND dest_id = ?",
-                (None, canonical),
-            ).fetchone()
-            conn.execute("UPDATE mappings SET dest_id = ? WHERE dest_id = ?", (canonical, dest_id))
-        return canonical
 
 
 def normalize_all_destination_ids() -> int:
@@ -314,8 +296,10 @@ def check_and_mark_seen(content_hash: str, source_id: int) -> bool:
         ).fetchone()
         if row:
             return True
+        # Row may exist outside the 24h window: INSERT OR IGNORE keeps the
+        # ORIGINAL first_seen forever so the window never slides forward.
         conn.execute(
-            "INSERT OR REPLACE INTO seen_posts (content_hash, source_id) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO seen_posts (content_hash, source_id) VALUES (?, ?)",
             (content_hash, source_id),
         )
         return False
