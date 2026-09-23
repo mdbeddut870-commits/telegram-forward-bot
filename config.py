@@ -68,6 +68,11 @@ ADMIN_IDS: set[int] = {
 # -- Database --
 DB_PATH: str = os.getenv("DB_PATH", "data/bot.db")
 
+# -- Web dashboard --
+# Shared secret for the mini dashboard served by the health server.
+# Empty value disables the dashboard (403 setup hint).
+DASHBOARD_TOKEN: str = os.getenv("DASHBOARD_TOKEN", "")
+
 # -- Forwarding behavior --
 # When enabled, messages posted by the bot's own user account in a source
 # chat are forwarded too. Off by default to avoid accidental loops.

@@ -28,6 +28,7 @@ from forwarder import (
     start_source_polling,
 )
 from handlers import register_bot_handlers
+import dashboard
 
 # -- Logging setup --
 logging.basicConfig(
@@ -41,17 +42,40 @@ logger = logging.getLogger("bot")
 class _HealthHandler(BaseHTTPRequestHandler):
     """Minimal HTTP endpoint required by the Cloudflare Container probe."""
 
-    def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if self.path not in ("/ping", "/health"):
-            self.send_response(404)
-            self.end_headers()
-            return
-        body = b'{"status":"running"}\n'
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def do_GET(self) -> None:  # noqa: N802
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(self.path)
+            if parsed.path in ("/ping", "/health"):
+                body = b'{"status":"running"}\n'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            dashboard.handle_get(self, parsed.path, parsed.query)
+        except Exception:
+            logger.exception("dashboard GET failed")
+            try:
+                self.send_response(500)
+                self.end_headers()
+            except Exception:
+                pass
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(self.path)
+            dashboard.handle_post(self, parsed.path, parsed.query)
+        except Exception:
+            logger.exception("dashboard POST failed")
+            try:
+                self.send_response(500)
+                self.end_headers()
+            except Exception:
+                pass
+
 
     def log_message(self, format: str, *args: object) -> None:
         # Keep the bot logs focused on Telegram events.
@@ -68,6 +92,8 @@ def _start_health_server() -> ThreadingHTTPServer:
     thread = threading.Thread(target=server.serve_forever, name="health-server", daemon=True)
     thread.start()
     logger.info("Health server listening on port %d", port)
+    from datetime import datetime, timezone
+    db.set_state("started_at", datetime.now(timezone.utc).isoformat())
     return server
 
 

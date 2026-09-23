@@ -353,6 +353,19 @@ def get_stats(days: int = 7) -> dict:
     }
 
 
+# -- Web dashboard: recent dedup entries -------------------------------
+
+def recent_seen(limit: int = 30) -> list[dict]:
+    """Newest-first sample of the dedup table for the dashboard."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT content_hash, source_id, first_seen FROM seen_posts "
+            "ORDER BY first_seen DESC LIMIT ?",
+            (max(1, min(200, int(limit))),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 # -- Bot state (key-value store) --
 
 def get_state(key: str, default: str = "") -> str:
